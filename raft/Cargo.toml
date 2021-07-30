@@ -13,7 +13,8 @@ publish = false
 
 [dependencies]
 async-trait = "0.1"
-futures = "0.3"
+futures = "0.3.16"
+
 futures-timer = "3.0"
 log = "0.4"
 prost = "0.6"
