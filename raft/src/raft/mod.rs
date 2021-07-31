@@ -88,7 +88,7 @@ macro_rules! rlog {
         ::log::$level!("[#{} @{} as {}] {}", $raft.me, $raft.p.current_term, $raft.role, format!($($arg)+))
     };
     ($raft:expr, $($arg:tt)+) => {
-        ::log::info!("[#{} @{} as {}] {}", $raft.me, $raft.p.current_term, $raft.role, format!($($arg)+))
+        rlog!(level: info, $raft, $($arg)+)
     };
 }
 
@@ -136,29 +136,21 @@ impl Raft {
     /// see paper's Figure 2 for a description of what should be persistent.
     fn persist(&mut self) {
         // Your code here (2C).
-        // Example:
-        // labcodec::encode(&self.xxx, &mut data).unwrap();
-        // labcodec::encode(&self.yyy, &mut data).unwrap();
-        // self.persister.save_raft_state(data);
+        let mut data = Vec::new();
+        labcodec::encode(&self.p, &mut data).unwrap(); // todo: merge
+        self.persister.save_raft_state(data);
     }
 
     /// restore previously persisted state.
     fn restore(&mut self, data: &[u8]) {
         if data.is_empty() {
             // bootstrap without any state?
+            rlog!(self, "start without any state");
             return;
         }
         // Your code here (2C).
-        // Example:
-        // match labcodec::decode(data) {
-        //     Ok(o) => {
-        //         self.xxx = o.xxx;
-        //         self.yyy = o.yyy;
-        //     }
-        //     Err(e) => {
-        //         panic!("{:?}", e);
-        //     }
-        // }
+        self.p = labcodec::decode(data).unwrap();
+        rlog!(self, "start with restored state");
     }
 
     fn start<M>(&mut self, command: &M) -> Result<(u64, u64)>
@@ -401,8 +393,7 @@ impl Raft {
                 // start new election
                 self.turn_candidate();
                 self.update_term(self.p.current_term + 1);
-                self.p.voted_for = Some(self.me);
-                self.reset_timeout();
+                self.p.voted_for = Some(self.me as u64);
                 self.start_new_election();
             }
             _ => {} // no timeout for leader
@@ -417,6 +408,7 @@ impl Raft {
             }
             _ => {} // no heart beat for non-leader
         }
+        self.persist(); // persist data
     }
 
     fn handle_request_vote_request(
@@ -432,7 +424,7 @@ impl Raft {
                     self.turn_follower();
                 }
 
-                let id = args.candidate_id as usize;
+                let id = args.candidate_id;
 
                 // if self is candidate, then voted_for is already Some(me)
                 let not_voted_other = self.p.voted_for.map(|v| v == id) != Some(false);
@@ -450,6 +442,7 @@ impl Raft {
 
         if let Some(v) = vote_for {
             self.p.voted_for = Some(v);
+            self.reset_timeout();
         }
 
         Ok(RequestVoteReply {
@@ -587,15 +580,6 @@ impl Raft {
     }
 }
 
-impl Raft {
-    /// Only for suppressing deadcode warnings.
-    #[doc(hidden)]
-    pub fn __suppress_deadcode(&mut self) {
-        self.persist();
-        let _ = &self.persister;
-    }
-}
-
 // Choose concurrency paradigm.
 //
 // You can either drive the raft state machine by the rpc framework,
@@ -658,7 +642,11 @@ impl Node {
                         event = event_loop_rx.select_next_some() => {
                             raft.lock().unwrap().handle_event(event);
                         }
-                        _ = shutdown_rx => break, // will cause event_loop_rx to be dropped
+                        _ = shutdown_rx => {
+                            let raft = raft.lock().unwrap();
+                            rlog!(level: warn, raft, "being killed");
+                            break; // will cause event_loop_rx to be dropped
+                        }
                     }
                 }
             })

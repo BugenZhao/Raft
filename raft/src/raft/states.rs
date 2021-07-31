@@ -42,10 +42,13 @@ impl Display for RoleState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Message)]
 pub struct PersistentState {
+    #[prost(uint64, tag = "1")]
     pub current_term: u64,
-    pub voted_for: Option<usize>,
+    #[prost(uint64, optional, tag = "2")]
+    pub voted_for: Option<u64>,
+    #[prost(message, repeated, tag = "3")]
     pub log: Vec<Entry>,
 }
 
