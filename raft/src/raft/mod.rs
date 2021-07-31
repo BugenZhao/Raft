@@ -314,7 +314,7 @@ impl Raft {
         }
     }
 
-    fn commit_up_to_new_index(&mut self, new_commit_index: usize) {
+    fn commit_and_apply_up_to(&mut self, new_commit_index: usize) {
         if new_commit_index <= self.v.commit_index {
             return;
         }
@@ -325,13 +325,15 @@ impl Raft {
                 command: self.p.log[i].data.clone(),
                 command_index: i as u64,
             };
-            rlog!(self, "commit msg at {}: {:?}", i, msg.command);
+            rlog!(self, "commit and apply msg at {}: {:?}", i, msg.command);
             self.apply_tx.unbounded_send(msg).unwrap();
         }
+
         self.v.commit_index = new_commit_index;
+        self.v.last_applied = new_commit_index; // todo: background real apply?
     }
 
-    fn try_commit(&mut self) {
+    fn leader_try_commit(&mut self) {
         if let RoleState::Leader { match_index, .. } = &self.role {
             let mut new_commit_index = self.v.commit_index;
 
@@ -353,7 +355,7 @@ impl Raft {
                 }
             }
 
-            self.commit_up_to_new_index(new_commit_index);
+            self.commit_and_apply_up_to(new_commit_index);
         }
     }
 
@@ -523,7 +525,7 @@ impl Raft {
                             if args.leader_commit_index as usize > self.v.commit_index {
                                 let new_commit_index =
                                     args.leader_commit_index.min(self.last_log_index()) as usize;
-                                self.commit_up_to_new_index(new_commit_index);
+                                self.commit_and_apply_up_to(new_commit_index);
                             }
                             true
                         }
@@ -563,7 +565,7 @@ impl Raft {
                         if reply.success {
                             next_index[from] = new_next_index;
                             match_index[from] = new_next_index - 1;
-                            self.try_commit();
+                            self.leader_try_commit();
                         } else {
                             next_index[from] = next_index[from].saturating_sub(1);
                             // will sync again on next heartbeat
