@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -55,6 +56,17 @@ pub enum RoleState {
         next_index: Vec<usize>,
         match_index: Vec<usize>,
     },
+}
+
+impl Display for RoleState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let desc = match self {
+            RoleState::Follower => "Follower",
+            RoleState::Candidate { .. } => "Candidate",
+            RoleState::Leader { .. } => "Leader",
+        };
+        write!(f, "{}", desc)
+    }
 }
 
 #[derive(Debug)]
@@ -124,6 +136,12 @@ pub struct Raft {
     executor: ThreadPool,
 }
 
+macro_rules! rlog {
+    ($raft:expr, $($arg:tt)+) => {
+        ::log::info!("[#{} @{} as {}] {}", $raft.me, $raft.p.current_term, $raft.role, format!($($arg)+))
+    };
+}
+
 impl Raft {
     /// the service or tester wants to create a Raft server. the ports
     /// of all the Raft servers (including this one) are in peers. this
@@ -164,6 +182,7 @@ impl Raft {
 
     fn update_term(&mut self, term: u64) {
         if term > self.p.current_term {
+            rlog!(self, "update term to {}", term);
             self.p.current_term = term;
             self.p.voted_for = None;
         } else if term < self.p.current_term {
@@ -175,22 +194,27 @@ impl Raft {
         self.event_loop_tx.as_ref().expect("no event loop sender")
     }
 
+    fn turn(&mut self, role: RoleState) {
+        rlog!(self, "turn to {}", role);
+        self.role = role;
+    }
+
     fn turn_follower(&mut self) {
-        self.role = RoleState::Follower;
+        self.turn(RoleState::Follower);
     }
 
     fn turn_candidate(&mut self) {
         let votes = [self.me].iter().cloned().collect();
-        self.role = RoleState::Candidate { votes };
+        self.turn(RoleState::Candidate { votes });
     }
 
     fn turn_leader(&mut self) {
         let next_index = vec![self.p.log.len(); self.peers.len()];
         let match_index = vec![0; self.peers.len()];
-        self.role = RoleState::Leader {
+        self.turn(RoleState::Leader {
             next_index,
             match_index,
-        };
+        });
     }
 
     /// save Raft's persistent state to stable storage,
@@ -312,6 +336,10 @@ impl Raft {
     }
 
     fn handle_event(&mut self, event: Event) {
+        if !matches!(event, Event::HeartBeat) {
+            rlog!(self, "handle event: {:?}", event);
+        }
+
         match event {
             Event::ResetTimeout => unreachable!(), // already handled by timer
             Event::Timeout => self.handle_timeout(),
@@ -329,6 +357,8 @@ impl Raft {
                 self.update_term(self.p.current_term + 1);
                 self.p.voted_for = Some(self.me);
                 self.schedule_event(Event::ResetTimeout);
+
+                rlog!(self, "start new election");
 
                 for (i, peer) in self.peers.iter().enumerate() {
                     if i == self.me {
@@ -355,6 +385,8 @@ impl Raft {
         match &mut self.role {
             RoleState::Leader { .. } => {
                 // send heart beats
+                rlog!(self, "send heart beats");
+
                 for (i, peer) in self.peers.iter().enumerate() {
                     if i == self.me {
                         continue;
@@ -546,11 +578,12 @@ impl Node {
             .spawn(async move {
                 let build_rand_timer = || {
                     futures_timer::Delay::new(Duration::from_millis(
-                        rand::thread_rng().gen_range(200, 500),
+                        rand::thread_rng().gen_range(500, 1000),
                     ))
                     .fuse()
                 };
-                let build_hb_timer = || futures_timer::Delay::new(Duration::from_millis(50)).fuse();
+                let build_hb_timer =
+                    || futures_timer::Delay::new(Duration::from_millis(150)).fuse();
 
                 let mut timeout_timer = build_rand_timer();
                 let mut hb_timer = build_hb_timer();
@@ -648,11 +681,17 @@ impl RaftService for Node {
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
         let mut raft = self.raft.lock().unwrap();
-        raft.handle_request_vote_request(args)
+        rlog!(raft, "rpc: {:?}", args);
+        let result = raft.handle_request_vote_request(args);
+        rlog!(raft, "rpc reply: {:?}", result);
+        result
     }
 
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
         let mut raft = self.raft.lock().unwrap();
-        raft.handle_append_entries_request(args)
+        rlog!(raft, "rpc: {:?}", args);
+        let result = raft.handle_append_entries_request(args);
+        rlog!(raft, "rpc reply: {:?}", result);
+        result
     }
 }
