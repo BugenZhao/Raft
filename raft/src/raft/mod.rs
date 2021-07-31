@@ -103,11 +103,15 @@ impl VolatileState {
 
 #[derive(Debug)]
 pub enum Event {
-    ResetTimeout,
     Timeout,
     HeartBeat,
     RequestVoteReply(usize, RequestVoteReply),
     AppendEntriesReply(usize, AppendEntriesReply),
+}
+
+#[derive(Debug)]
+pub enum TimerAction {
+    ResetTimeout,
 }
 
 // A single Raft peer.
@@ -130,6 +134,7 @@ pub struct Raft {
 
     // channels
     event_loop_tx: Option<UnboundedSender<Event>>, // should always be Some
+    timer_action_tx: Option<UnboundedSender<TimerAction>>, // should always be Some
     apply_tx: UnboundedSender<ApplyMsg>,
 
     // executor
@@ -168,6 +173,7 @@ impl Raft {
             p: PersistentState::new(),
             v: VolatileState::new(),
             event_loop_tx: None,
+            timer_action_tx: None,
             apply_tx,
             executor: ThreadPool::new().unwrap(),
         };
@@ -192,6 +198,12 @@ impl Raft {
 
     fn event_loop_tx(&self) -> &UnboundedSender<Event> {
         self.event_loop_tx.as_ref().expect("no event loop sender")
+    }
+
+    fn timer_action_tx(&self) -> &UnboundedSender<TimerAction> {
+        self.timer_action_tx
+            .as_ref()
+            .expect("no timer action sender")
     }
 
     fn turn(&mut self, role: RoleState) {
@@ -327,8 +339,10 @@ impl Raft {
 }
 
 impl Raft {
-    fn schedule_event(&self, event: Event) {
-        let result = self.event_loop_tx().unbounded_send(event);
+    fn reset_timeout(&self) {
+        let result = self
+            .timer_action_tx()
+            .unbounded_send(TimerAction::ResetTimeout);
 
         if let Err(e) = result {
             error!("schedule event: {}", e);
@@ -341,7 +355,6 @@ impl Raft {
         }
 
         match event {
-            Event::ResetTimeout => unreachable!(), // already handled by timer
             Event::Timeout => self.handle_timeout(),
             Event::HeartBeat => self.handle_heart_beat(),
             Event::RequestVoteReply(from, reply) => self.handle_request_vote_reply(from, reply),
@@ -356,7 +369,7 @@ impl Raft {
                 self.turn_candidate();
                 self.update_term(self.p.current_term + 1);
                 self.p.voted_for = Some(self.me);
-                self.schedule_event(Event::ResetTimeout);
+                self.reset_timeout();
 
                 rlog!(self, "start new election");
 
@@ -476,7 +489,7 @@ impl Raft {
 
                 match &mut self.role {
                     RoleState::Follower => {
-                        self.schedule_event(Event::ResetTimeout);
+                        self.reset_timeout();
                         true // todo: log replication
                     }
                     RoleState::Candidate { .. } => {
@@ -551,9 +564,11 @@ impl Node {
     pub fn new(mut raft: Raft) -> Node {
         // Your code here.
         let (event_loop_tx, event_loop_rx) = mpsc::unbounded();
+        let (timer_action_tx, timer_action_rx) = mpsc::unbounded();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         raft.event_loop_tx = Some(event_loop_tx.clone());
+        raft.timer_action_tx = Some(timer_action_tx);
 
         let node = Self {
             raft: Arc::new(Mutex::new(raft)),
@@ -562,6 +577,7 @@ impl Node {
             executor: ThreadPool::new().unwrap(),
         };
         node.start_event_loop(event_loop_rx, shutdown_rx);
+        node.start_timer(timer_action_rx);
 
         node
     }
@@ -572,11 +588,27 @@ impl Node {
         mut shutdown_rx: oneshot::Receiver<()>,
     ) {
         let raft = Arc::clone(&self.raft);
+
+        self.executor
+            .spawn(async move {
+                loop {
+                    select! {
+                        event = event_loop_rx.select_next_some() => {
+                            raft.lock().unwrap().handle_event(event);
+                        }
+                        _ = shutdown_rx => break, // will cause event_loop_rx to be dropped
+                    }
+                }
+            })
+            .expect("failed to spawn event loop");
+    }
+
+    fn start_timer(&self, mut timer_action_rx: UnboundedReceiver<TimerAction>) {
         let event_loop_tx = self.event_loop_tx.clone();
 
         self.executor
             .spawn(async move {
-                let build_rand_timer = || {
+                let build_timeout_timer = || {
                     futures_timer::Delay::new(Duration::from_millis(
                         rand::thread_rng().gen_range(500, 1000),
                     ))
@@ -585,30 +617,32 @@ impl Node {
                 let build_hb_timer =
                     || futures_timer::Delay::new(Duration::from_millis(150)).fuse();
 
-                let mut timeout_timer = build_rand_timer();
+                let mut timeout_timer = build_timeout_timer();
                 let mut hb_timer = build_hb_timer();
 
                 loop {
                     select! {
-                        event = event_loop_rx.select_next_some() => {
-                            match event {
-                                Event::ResetTimeout => timeout_timer = build_rand_timer(),
-                                event => raft.lock().unwrap().handle_event(event),
+                        action = timer_action_rx.select_next_some() => {
+                            match action {
+                                TimerAction::ResetTimeout => timeout_timer = build_timeout_timer(),
                             }
                         }
                         _ = timeout_timer => {
-                            event_loop_tx.unbounded_send(Event::Timeout).unwrap();
-                            timeout_timer = build_rand_timer();
+                            match event_loop_tx.unbounded_send(Event::Timeout) {
+                                Ok(_) => timeout_timer = build_timeout_timer(),
+                                Err(_) => break, // event loop exited
+                            }
                         },
                         _ = hb_timer => {
-                            event_loop_tx.unbounded_send(Event::HeartBeat).unwrap();
-                            hb_timer = build_hb_timer();
+                            match event_loop_tx.unbounded_send(Event::HeartBeat) {
+                                Ok(_) => hb_timer = build_hb_timer(),
+                                Err(_) => break, // event loop exited
+                            }
                         }
-                        _ = shutdown_rx => break, // will cause event_loop_rx to be dropped
                     }
                 }
             })
-            .expect("failed to spawn event loop");
+            .expect("failed to spawn timer");
     }
 
     /// the service using Raft (e.g. a k/v server) wants to start
