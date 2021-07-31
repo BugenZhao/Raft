@@ -44,6 +44,7 @@ pub enum Event {
         new_next_index: usize,
         is_heart_beat: bool, // logging purpose only
     },
+    ForcePersist,
 }
 
 #[derive(Debug)]
@@ -386,6 +387,7 @@ impl Raft {
                 new_next_index,
                 ..
             } => self.handle_append_entries_reply(from, reply, new_next_index),
+            Event::ForcePersist => self.persist(),
         }
     }
 
@@ -652,8 +654,9 @@ impl Node {
                             raft.lock().unwrap().handle_event(event);
                         }
                         _ = shutdown_rx => {
-                            let raft = raft.lock().unwrap();
+                            let mut raft = raft.lock().unwrap();
                             rlog!(level: warn, raft, "being killed");
+                            raft.handle_event(Event::ForcePersist);
                             break; // will cause event_loop_rx to be dropped
                         }
                     }
