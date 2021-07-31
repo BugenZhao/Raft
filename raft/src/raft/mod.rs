@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use futures::channel::oneshot;
-use futures::executor::ThreadPool;
 use futures::task::SpawnExt;
 use futures::{select, FutureExt, StreamExt};
 use rand::Rng;
@@ -124,6 +123,11 @@ pub enum TimerAction {
     ResetTimeout,
 }
 
+type Executor = futures::executor::ThreadPool;
+lazy_static::lazy_static! {
+    static ref SHARED_EXECUTOR: Executor = Executor::new().unwrap();
+}
+
 // A single Raft peer.
 pub struct Raft {
     // RPC end points of all peers
@@ -148,7 +152,7 @@ pub struct Raft {
     apply_tx: UnboundedSender<ApplyMsg>,
 
     // executor
-    executor: ThreadPool,
+    executor: Executor,
 }
 
 macro_rules! rlog {
@@ -188,7 +192,7 @@ impl Raft {
             event_loop_tx: None,
             timer_action_tx: None,
             apply_tx,
-            executor: ThreadPool::new().unwrap(),
+            executor: SHARED_EXECUTOR.clone(),
         };
 
         // initialize from state persisted before a crash
@@ -302,7 +306,6 @@ impl Raft {
         }
     }
 }
-
 
 impl Raft {
     fn last_log_term(&self) -> u64 {
@@ -693,7 +696,7 @@ pub struct Node {
     raft: Arc<Mutex<Raft>>,
     event_loop_tx: UnboundedSender<Event>,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-    executor: ThreadPool,
+    executor: Executor,
 }
 
 impl Node {
@@ -707,11 +710,13 @@ impl Node {
         raft.event_loop_tx = Some(event_loop_tx.clone());
         raft.timer_action_tx = Some(timer_action_tx);
 
+        let executor = raft.executor.clone();
+
         let node = Self {
             raft: Arc::new(Mutex::new(raft)),
             event_loop_tx,
             shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
-            executor: ThreadPool::new().unwrap(),
+            executor,
         };
         node.start_event_loop(event_loop_rx, shutdown_rx);
         node.start_timer(timer_action_rx);

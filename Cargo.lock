@@ -675,6 +675,7 @@ dependencies = [
  "futures-timer",
  "labcodec",
  "labrpc",
+ "lazy_static",
  "linearizability",
  "log",
  "prost",
