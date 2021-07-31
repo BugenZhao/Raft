@@ -603,20 +603,6 @@ impl Raft {
     }
 }
 
-// Choose concurrency paradigm.
-//
-// You can either drive the raft state machine by the rpc framework,
-//
-// ```rust
-// struct Node { raft: Arc<Mutex<Raft>> }
-// ```
-//
-// or spawn a new thread runs the raft state machine and communicate via
-// a channel.
-//
-// ```rust
-// struct Node { sender: Sender<Msg> }
-// ```
 #[derive(Clone)]
 pub struct Node {
     // Your code here.
@@ -734,24 +720,18 @@ impl Node {
         M: labcodec::Message,
     {
         // Your code here.
-        // Example:
-        // self.raft.start(command)
         self.raft.lock().unwrap().start(command)
     }
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
         // Your code here.
-        // Example:
-        // self.raft.term
         self.raft.lock().unwrap().p.current_term
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
         // Your code here.
-        // Example:
-        // self.raft.leader_id == self.id
         matches!(self.raft.lock().unwrap().role, RoleState::Leader { .. })
     }
 
@@ -781,9 +761,8 @@ impl Node {
 
 #[async_trait::async_trait]
 impl RaftService for Node {
-    // example RequestVote RPC handler.
-    //
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
+    // bugen: sorry for my `Mutex::lock`ing :(
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
         let mut raft = self.raft.lock().unwrap();
