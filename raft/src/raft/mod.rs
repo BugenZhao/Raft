@@ -99,22 +99,21 @@ impl VolatileState {
     }
 }
 
+type RpcResult<T> = labrpc::Result<T>;
+
 #[derive(Debug)]
 pub enum Event {
-    Timeout,
+    ElectionTimeout,
     HeartBeat,
     RequestVoteReply {
         from: usize,
-        reply: RequestVoteReply,
+        reply: RpcResult<RequestVoteReply>,
     },
     AppendEntriesReply {
         from: usize,
-        reply: labrpc::Result<AppendEntriesReply>,
+        reply: RpcResult<AppendEntriesReply>,
         new_next_index: usize,
-    },
-    HeartBeatReply {
-        from: usize,
-        reply: AppendEntriesReply,
+        is_heart_beat: bool, // logging purpose only
     },
 }
 
@@ -298,7 +297,6 @@ impl Raft {
                 };
 
                 self.p.log.push(entry);
-                self.sync_log();
 
                 Ok((self.last_log_index(), self.last_log_term()))
             }
@@ -347,61 +345,37 @@ impl Raft {
             let fut = peer.request_vote(&self.request_vote_args());
             self.executor
                 .spawn(async move {
-                    if let Ok(reply) = fut.await {
-                        let _ = tx.unbounded_send(Event::RequestVoteReply { from: i, reply });
-                        // todo: rx may be closed
-                    }
+                    let reply = fut.await;
+                    let _ = tx.unbounded_send(Event::RequestVoteReply { from: i, reply });
                 })
                 .unwrap();
         }
     }
 
-    fn send_heart_beats(&self) {
-        rlog!(self, "send heart beats");
-
-        for (i, peer) in self.other_peers() {
-            let tx = self.event_loop_tx().clone();
-            let fut = peer.append_entries(&self.append_entries_args(self.p.log.len()));
-            self.executor
-                .spawn(async move {
-                    if let Ok(reply) = fut.await {
-                        let _ = tx.unbounded_send(Event::HeartBeatReply { from: i, reply });
-                    }
-                })
-                .unwrap();
-        }
-    }
-
-    fn sync_log_for_peer(&self, i: usize, delayed: bool) {
-        rlog!(self, "sync log for peer {}", i);
+    fn heart_beat_sync_log(&self) {
+        rlog!(self, "hb, sync log for all");
 
         if let RoleState::Leader { next_index, .. } = &self.role {
-            let peer = &self.peers[i];
-            let tx = self.event_loop_tx().clone();
-            let fut = peer.append_entries(&self.append_entries_args(next_index[i]));
-            let new_next_index = self.p.log.len();
+            for (i, peer) in self.other_peers() {
+                let tx = self.event_loop_tx().clone();
+                let args = self.append_entries_args(next_index[i]);
+                let fut = peer.append_entries(&args);
+                let new_next_index = self.p.log.len();
+                let is_heart_beat = args.entries.is_empty();
 
-            self.executor
-                .spawn(async move {
-                    let reply_result = fut.await;
-                    if delayed {
-                        futures_timer::Delay::new(Duration::from_millis(500)).await;
-                    }
-                    let _ = tx.unbounded_send(Event::AppendEntriesReply {
-                        from: i,
-                        reply: reply_result,
-                        new_next_index,
-                    });
-                })
-                .unwrap();
+                self.executor
+                    .spawn(async move {
+                        let reply = fut.await;
+                        let _ = tx.unbounded_send(Event::AppendEntriesReply {
+                            from: i,
+                            reply,
+                            new_next_index,
+                            is_heart_beat,
+                        });
+                    })
+                    .unwrap();
+            }
         }
-    }
-
-    fn sync_log(&self) {
-        rlog!(self, "sync log for all");
-
-        self.other_peers()
-            .for_each(|(i, _)| self.sync_log_for_peer(i, false));
     }
 
     fn commit_up_to_new_index(&mut self, new_commit_index: usize) {
@@ -454,28 +428,36 @@ impl Raft {
     }
 }
 
+// event handlers
 impl Raft {
     fn handle_event(&mut self, event: Event) {
-        if !matches!(event, Event::HeartBeat | Event::HeartBeatReply { .. }) {
-            rlog!(self, "handle event: {:?}", event);
+        match (&event, &self.role) {
+            (Event::HeartBeat, _) => {}
+            (
+                Event::AppendEntriesReply {
+                    is_heart_beat: true,
+                    ..
+                },
+                _,
+            ) => {}
+            (Event::ElectionTimeout, RoleState::Leader { .. }) => {}
+            _ => rlog!(self, "handle event: {:?}", event),
         }
 
         match event {
-            Event::Timeout => self.handle_timeout(),
+            Event::ElectionTimeout => self.handle_election_timeout(),
             Event::HeartBeat => self.handle_heart_beat(),
             Event::RequestVoteReply { from, reply } => self.handle_request_vote_reply(from, reply),
             Event::AppendEntriesReply {
                 from,
                 reply,
                 new_next_index,
+                ..
             } => self.handle_append_entries_reply(from, reply, new_next_index),
-            Event::HeartBeatReply { reply, .. } => {
-                self.handle_append_entries_heart_beat_reply(reply)
-            }
         }
     }
 
-    fn handle_timeout(&mut self) {
+    fn handle_election_timeout(&mut self) {
         match &mut self.role {
             RoleState::Follower | RoleState::Candidate { .. } => {
                 // start new election
@@ -493,7 +475,7 @@ impl Raft {
         match &mut self.role {
             RoleState::Leader { .. } => {
                 // send heart beats
-                self.send_heart_beats();
+                self.heart_beat_sync_log();
             }
             _ => {} // no heart beat for non-leader
         }
@@ -538,23 +520,30 @@ impl Raft {
         })
     }
 
-    fn handle_request_vote_reply(&mut self, from: usize, reply: RequestVoteReply) {
-        if reply.term > self.p.current_term {
-            self.update_term(reply.term);
-            self.turn_follower();
-        }
+    fn handle_request_vote_reply(&mut self, from: usize, reply: RpcResult<RequestVoteReply>) {
+        match reply {
+            Ok(reply) => {
+                if reply.term > self.p.current_term {
+                    self.update_term(reply.term);
+                    self.turn_follower();
+                }
 
-        match &mut self.role {
-            RoleState::Candidate { votes } => {
-                if reply.vote_granted && reply.term == self.p.current_term {
-                    votes.insert(from);
-                    if votes.len() > self.peers.len() / 2 {
-                        self.turn_leader();
-                        self.handle_heart_beat(); // trigger heart beat immediately
+                match &mut self.role {
+                    RoleState::Candidate { votes } => {
+                        if reply.vote_granted && reply.term == self.p.current_term {
+                            votes.insert(from);
+                            if votes.len() > self.peers.len() / 2 {
+                                self.turn_leader();
+                                self.handle_heart_beat(); // trigger heart beat immediately
+                            }
+                        }
                     }
+                    _ => {}
                 }
             }
-            _ => {}
+            Err(e) => {
+                rlog!(level: warn, self, "request vote -> {} `{}`", from, e);
+            }
         }
     }
 
@@ -590,8 +579,10 @@ impl Raft {
                             }
 
                             let mut entries = args.entries;
-                            rlog!(self, "overwrite {} entries", entries.len());
-                            self.p.log.append(&mut entries);
+                            if !entries.is_empty() {
+                                rlog!(self, "overwrite {} entries", entries.len());
+                                self.p.log.append(&mut entries);
+                            }
 
                             if args.leader_commit_index as usize > self.v.commit_index {
                                 let new_commit_index =
@@ -615,17 +606,10 @@ impl Raft {
         })
     }
 
-    fn handle_append_entries_heart_beat_reply(&mut self, reply: AppendEntriesReply) {
-        if reply.term > self.p.current_term {
-            self.update_term(reply.term);
-            self.turn_follower();
-        }
-    }
-
     fn handle_append_entries_reply(
         &mut self,
         from: usize,
-        reply: labrpc::Result<AppendEntriesReply>,
+        reply: RpcResult<AppendEntriesReply>,
         new_next_index: usize,
     ) {
         match reply {
@@ -646,22 +630,20 @@ impl Raft {
                             self.try_commit();
                         } else {
                             next_index[from] = next_index[from].saturating_sub(1);
-                            self.sync_log_for_peer(from, false);
+                            // will sync again on next heartbeat
                         }
                     }
                     _ => {}
                 }
             }
             Err(e) => {
-                // resend
                 rlog!(
                     level: warn,
                     self,
-                    "append entries for {} `{}`, resend after delay",
+                    "append entries / heart beat -> {} `{}`",
                     from,
                     e
                 );
-                self.sync_log_for_peer(from, true);
             }
         }
     }
@@ -752,12 +734,11 @@ impl Node {
             .spawn(async move {
                 let build_timeout_timer = || {
                     futures_timer::Delay::new(Duration::from_millis(
-                        rand::thread_rng().gen_range(500, 1000),
+                        rand::thread_rng().gen_range(150, 250),
                     ))
                     .fuse()
                 };
-                let build_hb_timer =
-                    || futures_timer::Delay::new(Duration::from_millis(150)).fuse();
+                let build_hb_timer = || futures_timer::Delay::new(Duration::from_millis(50)).fuse();
 
                 let mut timeout_timer = build_timeout_timer();
                 let mut hb_timer = build_hb_timer();
@@ -770,7 +751,7 @@ impl Node {
                             }
                         }
                         _ = timeout_timer => {
-                            match event_loop_tx.unbounded_send(Event::Timeout) {
+                            match event_loop_tx.unbounded_send(Event::ElectionTimeout) {
                                 Ok(_) => timeout_timer = build_timeout_timer(),
                                 Err(_) => break, // event loop exited
                             }
@@ -857,17 +838,24 @@ impl RaftService for Node {
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
         let mut raft = self.raft.lock().unwrap();
-        rlog!(raft, "rpc: {:?}", args);
+        rlog!(raft, "rpc -> {:?}", args);
         let result = raft.handle_request_vote_request(args);
-        rlog!(raft, "rpc reply: {:?}", result);
+        rlog!(raft, "rpc <- {:?}", result);
         result
     }
 
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
         let mut raft = self.raft.lock().unwrap();
-        rlog!(raft, "rpc: {:?}", args);
+        let is_hb = args.entries.is_empty();
+        if is_hb {
+            rlog!(raft, "rpc -> <heart beat>");
+        } else {
+            rlog!(raft, "rpc -> {:?}", args);
+        }
         let result = raft.handle_append_entries_request(args);
-        rlog!(raft, "rpc reply: {:?}", result);
+        if !is_hb {
+            rlog!(raft, "rpc <- {:?}", result);
+        }
         result
     }
 }
