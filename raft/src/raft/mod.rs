@@ -204,6 +204,8 @@ impl Raft {
     }
 
     fn append_entries_args(&self, start_at: usize) -> AppendEntriesArgs {
+        assert!(start_at >= 1, "log index start from 1");
+
         let entries = self.p.log[start_at..].iter().cloned().collect();
         let prev_log_index = start_at - 1;
 
@@ -482,9 +484,9 @@ impl Raft {
         &mut self,
         args: AppendEntriesArgs,
     ) -> labrpc::Result<AppendEntriesReply> {
-        let success = {
+        let (success, conflict_index) = {
             if args.term < self.p.current_term {
-                false
+                (false, None)
             } else {
                 if args.term > self.p.current_term
                     || matches!(self.role, RoleState::Candidate { .. }) // election failed
@@ -499,11 +501,25 @@ impl Raft {
                         self.reset_timeout();
 
                         // log replication
-                        let contains_prev =
-                            self.p.log.get(args.prev_log_index as usize).map(|e| e.term)
-                                == Some(args.prev_log_term);
+                        let our_term = self.p.log.get(args.prev_log_index as usize).map(|e| e.term);
+                        let contains_prev = our_term == Some(args.prev_log_term);
                         if !contains_prev {
-                            false
+                            let conflict_index = {
+                                // for fast back up
+                                if args.prev_log_index >= self.p.log.len() as u64 {
+                                    // our log is shorter than leader's
+                                    self.p.log.len()
+                                } else {
+                                    // ignore all entries at `our_term`
+                                    let our_term = our_term.unwrap();
+                                    (0..args.prev_log_index as usize)
+                                        .rev()
+                                        .find(|i| self.p.log.get(*i).unwrap().term != our_term)
+                                        .unwrap() // must exists thanks to dummy entry
+                                        + 1
+                                }
+                            };
+                            (false, Some(conflict_index))
                         } else {
                             while self.p.log.len() > args.prev_log_index as usize + 1 {
                                 self.p.log.pop();
@@ -520,7 +536,7 @@ impl Raft {
                                     args.leader_commit_index.min(self.last_log_index()) as usize;
                                 self.commit_and_apply_up_to(new_commit_index);
                             }
-                            true
+                            (true, None)
                         }
                     }
                     RoleState::Candidate { .. } => {
@@ -534,6 +550,7 @@ impl Raft {
         Ok(AppendEntriesReply {
             term: self.p.current_term,
             success,
+            conflict_index: conflict_index.unwrap_or(0) as u64,
         })
     }
 
@@ -560,7 +577,13 @@ impl Raft {
                             match_index[from] = new_next_index - 1;
                             self.leader_try_commit();
                         } else {
-                            next_index[from] = next_index[from].saturating_sub(1);
+                            let preceding = next_index[from].saturating_sub(1).max(1);
+                            if reply.conflict_index == 0 {
+                                // invalid hint
+                                next_index[from] = preceding;
+                            } else {
+                                next_index[from] = (reply.conflict_index as usize).min(preceding);
+                            }
                             // will sync again on next heartbeat
                         }
                     }
