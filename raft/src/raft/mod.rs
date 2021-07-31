@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-use std::fmt::Display;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,90 +11,21 @@ use rand::Rng;
 pub mod config;
 pub mod errors;
 pub mod persister;
+mod states;
 #[cfg(test)]
 mod tests;
 
 use self::errors::*;
 use self::persister::*;
+use self::states::*;
 use crate::proto::raftpb::*;
+
+pub use self::states::State;
 
 pub struct ApplyMsg {
     pub command_valid: bool,
     pub command: Vec<u8>,
     pub command_index: u64,
-}
-
-/// State of a raft peer.
-#[derive(Default, Clone, Debug)]
-pub struct State {
-    pub term: u64,
-    pub is_leader: bool,
-}
-
-impl State {
-    /// The current term of this peer.
-    pub fn term(&self) -> u64 {
-        self.term
-    }
-    /// Whether this peer believes it is the leader.
-    pub fn is_leader(&self) -> bool {
-        self.is_leader
-    }
-}
-
-#[derive(Debug)]
-pub enum RoleState {
-    Follower,
-    Candidate {
-        votes: HashSet<usize>,
-    },
-    Leader {
-        next_index: Vec<usize>,
-        match_index: Vec<usize>,
-    },
-}
-
-impl Display for RoleState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let desc = match self {
-            RoleState::Follower => "Follower",
-            RoleState::Candidate { .. } => "Candidate",
-            RoleState::Leader { .. } => "Leader",
-        };
-        write!(f, "{}", desc)
-    }
-}
-
-#[derive(Debug)]
-pub struct PersistentState {
-    current_term: u64,
-    voted_for: Option<usize>,
-    log: Vec<Entry>,
-}
-
-impl PersistentState {
-    pub fn new() -> Self {
-        Self {
-            current_term: 0,
-            voted_for: None,
-            log: vec![Default::default()], // dummy entry at index 0
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct VolatileState {
-    commit_index: usize,
-    last_applied: usize,
-}
-
-impl VolatileState {
-    pub fn new() -> Self {
-        Self {
-            commit_index: 0,
-            last_applied: 0,
-        }
-    }
 }
 
 type RpcResult<T> = labrpc::Result<T>;
@@ -202,56 +131,6 @@ impl Raft {
         rf
     }
 
-    fn update_term(&mut self, term: u64) {
-        if term > self.p.current_term {
-            rlog!(self, "update term to {}", term);
-            self.p.current_term = term;
-            self.p.voted_for = None;
-        } else if term < self.p.current_term {
-            panic!("update to a lower term")
-        }
-    }
-
-    fn event_loop_tx(&self) -> &UnboundedSender<Event> {
-        self.event_loop_tx.as_ref().expect("no event loop sender")
-    }
-
-    fn timer_action_tx(&self) -> &UnboundedSender<TimerAction> {
-        self.timer_action_tx
-            .as_ref()
-            .expect("no timer action sender")
-    }
-
-    fn turn(&mut self, role: RoleState) {
-        rlog!(self, "turn to {}", role);
-        self.role = role;
-    }
-
-    fn turn_follower(&mut self) {
-        self.turn(RoleState::Follower);
-    }
-
-    fn turn_candidate(&mut self) {
-        let votes = [self.me].iter().cloned().collect();
-        self.turn(RoleState::Candidate { votes });
-    }
-
-    fn turn_leader(&mut self) {
-        let next_index = vec![self.p.log.len(); self.peers.len()];
-        let match_index = vec![0; self.peers.len()];
-        self.turn(RoleState::Leader {
-            next_index,
-            match_index,
-        });
-    }
-
-    fn other_peers(&self) -> impl Iterator<Item = (usize, &RaftClient)> {
-        self.peers
-            .iter()
-            .enumerate()
-            .filter(move |(i, _)| i != &self.me)
-    }
-
     /// save Raft's persistent state to stable storage,
     /// where it can later be retrieved after a crash and restart.
     /// see paper's Figure 2 for a description of what should be persistent.
@@ -305,7 +184,25 @@ impl Raft {
     }
 }
 
+// utilities
 impl Raft {
+    fn event_loop_tx(&self) -> &UnboundedSender<Event> {
+        self.event_loop_tx.as_ref().expect("no event loop sender")
+    }
+
+    fn timer_action_tx(&self) -> &UnboundedSender<TimerAction> {
+        self.timer_action_tx
+            .as_ref()
+            .expect("no timer action sender")
+    }
+
+    fn other_peers(&self) -> impl Iterator<Item = (usize, &RaftClient)> {
+        self.peers
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| i != &self.me)
+    }
+
     fn last_log_term(&self) -> u64 {
         self.p.log.last().unwrap().term
     }
@@ -336,7 +233,46 @@ impl Raft {
             last_log_term: self.last_log_term(),
         }
     }
+}
 
+// state actions
+impl Raft {
+    fn update_term(&mut self, term: u64) {
+        if term > self.p.current_term {
+            rlog!(self, "update term to {}", term);
+            self.p.current_term = term;
+            self.p.voted_for = None;
+        } else if term < self.p.current_term {
+            panic!("update to a lower term")
+        }
+    }
+
+    fn turn(&mut self, role: RoleState) {
+        rlog!(self, "turn to {}", role);
+        self.role = role;
+    }
+
+    fn turn_follower(&mut self) {
+        self.turn(RoleState::Follower);
+    }
+
+    fn turn_candidate(&mut self) {
+        let votes = [self.me].iter().cloned().collect();
+        self.turn(RoleState::Candidate { votes });
+    }
+
+    fn turn_leader(&mut self) {
+        let next_index = vec![self.p.log.len(); self.peers.len()];
+        let match_index = vec![0; self.peers.len()];
+        self.turn(RoleState::Leader {
+            next_index,
+            match_index,
+        });
+    }
+}
+
+// actions
+impl Raft {
     fn start_new_election(&self) {
         rlog!(self, "start new election");
 
