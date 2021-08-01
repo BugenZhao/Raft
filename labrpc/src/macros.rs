@@ -22,7 +22,7 @@ macro_rules! service {
             extern crate futures as __futures;
 
             #[async_trait::async_trait]
-            pub trait Service: Clone + Send + 'static {
+            pub trait Service: Clone + Send + Sync + 'static {
                 $(
                     $(#[$method_attr])*
                     async fn $method_name(&self, req: $input) -> $crate::Result<$output>;

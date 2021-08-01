@@ -1,7 +1,7 @@
 use crate::proto::raftpb::*;
 use std::{collections::HashSet, fmt::Display};
 
-/// State of a raft peer. (for testing)
+/// State of a raft peer (for testing).
 #[derive(Default, Clone, Debug)]
 pub struct State {
     pub term: u64,
@@ -19,6 +19,7 @@ impl State {
     }
 }
 
+/// Role of a peer with its specific states.
 #[derive(Debug)]
 pub enum RoleState {
     Follower,
@@ -42,6 +43,7 @@ impl Display for RoleState {
     }
 }
 
+/// Persistent state of a raft peer, made into a protobuf message for serde purpose.
 #[derive(Message)]
 pub struct PersistentState {
     #[prost(uint64, tag = "1")]
@@ -62,6 +64,7 @@ impl PersistentState {
     }
 }
 
+/// Volatile state of a raft peer.
 #[derive(Debug)]
 pub struct VolatileState {
     pub commit_index: usize,
