@@ -9,7 +9,7 @@ async-trait = "0.1"
 futures = { version = "0.3.16", features = ["thread-pool"] }
 futures-timer = "3.0"
 log = "0.4"
-prost = "0.6"
+prost = "0.8"
 rand = "0.7"
 
 labcodec = { path = "../labcodec" }

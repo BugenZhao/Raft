@@ -7,6 +7,7 @@ pub mod raftpb {
 
             // Your code here if more rpc desired.
             rpc append_entries(AppendEntriesArgs) returns (AppendEntriesReply);
+            rpc install_snapshot(InstallSnapshotArgs) returns (InstallSnapshotReply);
         }
     }
     pub use self::raft::{

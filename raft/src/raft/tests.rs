@@ -1037,3 +1037,99 @@ fn test_reliable_churn_2c() {
 fn test_unreliable_churn_2c() {
     internal_churn(true);
 }
+
+fn snap_common(name: &str, disconnect: bool, reliable: bool, crash: bool) {
+    const MAX_LOG_SIZE: usize = 2000;
+
+    let iters = 30;
+    let servers = 3;
+    let mut cfg = Config::new_with_snapshot(servers, !reliable);
+
+    cfg.begin(name);
+
+    let mut random = rand::thread_rng();
+    cfg.one(random_entry(&mut random), servers, true);
+    let mut leader1 = cfg.check_one_leader();
+
+    for i in 0..iters {
+        let (victim, sender) = if i % 3 == 1 {
+            (leader1, (leader1 + 1) % servers)
+        } else {
+            ((leader1 + 1) % servers, leader1)
+        };
+
+        if disconnect {
+            cfg.disconnect(victim);
+            cfg.one(random_entry(&mut random), servers - 1, true);
+        }
+        if crash {
+            cfg.crash1(victim);
+            cfg.one(random_entry(&mut random), servers - 1, true);
+        }
+
+        // send enough to get a snapshot
+        if let Some(raft) = cfg.rafts.lock().unwrap().get_mut(sender).unwrap() {
+            for _ in 0..=Config::SNAPSHOT_INTERVAL {
+                let _ = raft.start(&random_entry(&mut random));
+            }
+        }
+        // let applier threads catch up with the Start()'s
+        cfg.one(random_entry(&mut random), servers - 1, true);
+
+        if cfg.log_size() >= MAX_LOG_SIZE {
+            panic!("Log size too large");
+        }
+
+        if disconnect {
+            cfg.connect(victim);
+            cfg.one(random_entry(&mut random), servers, true);
+            leader1 = cfg.check_one_leader();
+        }
+        if crash {
+            cfg.start1(victim);
+            cfg.connect(victim);
+            cfg.one(random_entry(&mut random), servers, true);
+            cfg.check_one_leader();
+        }
+    }
+}
+
+#[test]
+fn test_snapshot_basic_2d() {
+    snap_common("Test (2D): snapshots basic", false, true, false);
+}
+
+#[test]
+fn test_snapshot_install_2d() {
+    snap_common(
+        "Test (2D): install snapshots (disconnect)",
+        true,
+        true,
+        false,
+    );
+}
+
+#[test]
+fn test_snapshot_install_unreliable_2d() {
+    snap_common(
+        "Test (2D): install snapshots (disconnect+unreliable)",
+        true,
+        false,
+        false,
+    );
+}
+
+#[test]
+fn test_snapshot_install_crash_2d() {
+    snap_common("Test (2D): install snapshots (crash)", false, true, true);
+}
+
+#[test]
+fn test_snapshot_install_uncrash_2d() {
+    snap_common(
+        "Test (2D): install snapshots (unreliable+crash)",
+        false,
+        false,
+        true,
+    );
+}

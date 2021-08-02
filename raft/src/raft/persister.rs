@@ -79,6 +79,16 @@ impl Persister for SimplePersister {
     }
 }
 
+impl SimplePersister {
+    pub fn raft_state_size(&self) -> usize {
+        self.states.lock().unwrap().0.len()
+    }
+
+    pub fn snapshot_size(&self) -> usize {
+        self.states.lock().unwrap().1.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

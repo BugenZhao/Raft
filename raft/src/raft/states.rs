@@ -1,4 +1,5 @@
 use crate::proto::raftpb::*;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Display};
 
 /// State of a raft peer (for testing).
@@ -43,14 +44,11 @@ impl Display for RoleState {
     }
 }
 
-/// Persistent state of a raft peer, made into a protobuf message for serde purpose.
-#[derive(Message)]
+/// Persistent state of a raft peer.
+#[derive(Serialize, Deserialize)]
 pub struct PersistentState {
-    #[prost(uint64, tag = "1")]
     pub current_term: u64,
-    #[prost(uint64, optional, tag = "2")]
     pub voted_for: Option<u64>,
-    #[prost(message, repeated, tag = "3")]
     pub log: Vec<Entry>,
 }
 

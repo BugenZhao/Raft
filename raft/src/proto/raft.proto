@@ -35,3 +35,13 @@ message AppendEntriesReply {
   bool success = 2;
   uint64 conflict_index = 3;
 }
+
+message InstallSnapshotArgs {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 last_included_index = 3;
+  uint64 last_included_term = 4;
+  bytes data = 5;
+}
+
+message InstallSnapshotReply { uint64 term = 1; }

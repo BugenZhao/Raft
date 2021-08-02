@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -58,7 +58,11 @@ impl Storage {
 fn init_logger() {
     use std::sync::Once;
     static LOGGER_INIT: Once = Once::new();
-    LOGGER_INIT.call_once(env_logger::init);
+    LOGGER_INIT.call_once(|| {
+        env_logger::builder()
+            .filter_level(log::LevelFilter::Info)
+            .init();
+    });
 }
 
 pub struct Config {
@@ -85,49 +89,62 @@ pub struct Config {
     rpcs0: usize,
     // number of agreements
     cmds0: usize,
+
+    snapshot_enabled: Arc<AtomicBool>,
 }
 
 impl Config {
+    pub const SNAPSHOT_INTERVAL: u64 = 10;
+
+    fn init_start_connect(&mut self) {
+        (0..self.n).for_each(|i| self.start1(i));
+        (0..self.n).for_each(|i| self.connect(i));
+    }
+
     pub fn new(n: usize, unreliable: bool) -> Config {
         init_logger();
 
-        let net = labrpc::Network::new();
-        net.set_reliable(!unreliable);
-        net.set_long_delays(true);
-        let storage = Storage {
-            logs: vec![HashMap::new(); n],
-            max_index: 0,
-            max_index0: 0,
+        let mut cfg = {
+            let net = labrpc::Network::new();
+            net.set_long_delays(true);
+            net.set_reliable(!unreliable);
+            let storage = Storage {
+                logs: vec![HashMap::new(); n],
+                max_index: 0,
+                max_index0: 0,
+            };
+            let mut saved = vec![];
+            let mut endnames = vec![];
+            for _ in 0..n {
+                endnames.push(vec![String::new(); n].into_boxed_slice());
+                saved.push(Arc::new(SimplePersister::new()));
+            }
+
+            Config {
+                net,
+                n,
+                rafts: Arc::new(Mutex::new(vec![None; n].into_boxed_slice())),
+                connected: vec![true; n].into_boxed_slice(),
+                saved: saved.into_boxed_slice(),
+                endnames: endnames.into_boxed_slice(),
+                storage: Arc::new(Mutex::new(storage)),
+
+                start: Instant::now(),
+                t0: Instant::now(),
+                rpcs0: 0,
+                cmds0: 0,
+
+                snapshot_enabled: Arc::new(AtomicBool::new(false)),
+            }
         };
-        let mut saved = vec![];
-        let mut endnames = vec![];
-        for _ in 0..n {
-            endnames.push(vec![String::new(); n].into_boxed_slice());
-            saved.push(Arc::new(SimplePersister::new()));
-        }
-        let mut cfg = Config {
-            net,
-            n,
-            rafts: Arc::new(Mutex::new(vec![None; n].into_boxed_slice())),
-            connected: vec![true; n].into_boxed_slice(),
-            saved: saved.into_boxed_slice(),
-            endnames: endnames.into_boxed_slice(),
-            storage: Arc::new(Mutex::new(storage)),
 
-            start: Instant::now(),
-            t0: Instant::now(),
-            rpcs0: 0,
-            cmds0: 0,
-        };
+        cfg.init_start_connect();
+        cfg
+    }
 
-        for i in 0..n {
-            cfg.start1(i);
-        }
-
-        for i in 0..n {
-            cfg.connect(i);
-        }
-
+    pub fn new_with_snapshot(n: usize, unreliable: bool) -> Config {
+        let cfg = Config::new(n, unreliable);
+        cfg.snapshot_enabled.store(true, Ordering::SeqCst);
         cfg
     }
 
@@ -321,7 +338,7 @@ impl Config {
     /// print the Test message.
     /// e.g. cfg.begin("Test (2B): RPC counts aren't too high")
     pub fn begin(&mut self, description: &str) {
-        println!(); // Force the log starts at a new line.
+        // println!(); // Force the log starts at a new line.
         info!("{} ...", description);
         self.t0 = Instant::now();
         self.rpcs0 = self.rpc_total();
@@ -376,45 +393,76 @@ impl Config {
         }
 
         // listen to messages from Raft indicating newly committed messages.
-        let (tx, apply_ch) = unbounded();
-        let storage = self.storage.clone();
-        let apply = apply_ch.for_each(move |cmd: raft::ApplyMsg| {
-            if !cmd.command_valid {
-                // ignore other types of ApplyMsg
-                return future::ready(());
-            }
-            match labcodec::decode(&cmd.command) {
-                Ok(entry) => {
-                    let mut s = storage.lock().unwrap();
-                    for (j, log) in s.logs.iter().enumerate() {
-                        if let Some(old) = log.get(&cmd.command_index) {
-                            if *old != entry {
-                                // some server has already committed a different value for this entry!
-                                panic!(
-                                    "commit index={:?} server={:?} {:?} != server={:?} {:?}",
-                                    cmd.command_index, i, entry, j, old
-                                );
+        let (apply_task, apply_tx) = {
+            let (apply_tx, apply_rx) = unbounded();
+            let storage = self.storage.clone();
+            let rafts = self.rafts.clone();
+            let snapshot_enabled = self.snapshot_enabled.clone();
+
+            let applier = move |cmd: raft::ApplyMsg| {
+                let snapshot_enabled = snapshot_enabled.load(Ordering::Acquire);
+
+                match cmd {
+                    raft::ApplyMsg::Command { index, command } => {
+                        let entry =
+                            labcodec::decode(&command).expect("committed command is not an entry");
+                        let mut s = storage.lock().unwrap();
+                        for (j, log) in s.logs.iter().enumerate() {
+                            if let Some(old) = log.get(&index) {
+                                if *old != entry {
+                                    // some server has already committed a different value for this entry!
+                                    panic!(
+                                        "commit index={:?} server={:?} {:?} != server={:?} {:?}",
+                                        index, i, entry, j, old
+                                    );
+                                }
+                            }
+                        }
+                        let log = &mut s.logs[i];
+                        if index > 1 && log.get(&(index - 1)).is_none() {
+                            panic!("server {} apply out of order {}", i, index);
+                        }
+                        log.insert(index, entry);
+                        if index > s.max_index {
+                            s.max_index = index;
+                        }
+
+                        if snapshot_enabled && (index + 1) % Config::SNAPSHOT_INTERVAL == 0 {
+                            let snapshot = command; // simply use this command for snapshot
+                            if let Some(node) = rafts.lock().unwrap()[i].as_mut() {
+                                node.snapshot(index, snapshot);
                             }
                         }
                     }
-                    let log = &mut s.logs[i];
-                    if cmd.command_index > 1 && log.get(&(cmd.command_index - 1)).is_none() {
-                        panic!("server {} apply out of order {}", i, cmd.command_index);
-                    }
-                    log.insert(cmd.command_index, entry);
-                    if cmd.command_index > s.max_index {
-                        s.max_index = cmd.command_index;
-                    }
-                }
-                Err(e) => {
-                    panic!("committed command is not an entry {:?}", e);
-                }
-            }
-            future::ready(())
-        });
-        self.net.spawn_poller(apply);
 
-        let rf = raft::Raft::new(clients, i, Box::new(self.saved[i].clone()), tx);
+                    raft::ApplyMsg::Snapshot {
+                        index,
+                        term,
+                        snapshot,
+                    } => {
+                        if snapshot_enabled {
+                            if let Some(node) = rafts.lock().unwrap()[i].as_mut() {
+                                if node.cond_install_snapshot(term, index, snapshot.clone()) {
+                                    let mut s = storage.lock().unwrap();
+                                    let log = &mut s.logs[i];
+                                    log.clear();
+                                    let entry = labcodec::decode(&snapshot)
+                                        .expect("commited snapshot is not an entry");
+                                    log.insert(index, entry);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                future::ready(())
+            };
+
+            (apply_rx.for_each(applier), apply_tx)
+        };
+        self.net.spawn_poller(apply_task);
+
+        let rf = raft::Raft::new(clients, i, Box::new(self.saved[i].clone()), apply_tx);
         let node = raft::Node::new(rf);
         self.rafts.lock().unwrap()[i] = Some(node.clone());
 
@@ -482,6 +530,15 @@ impl Config {
                 self.net.enable(endname, true);
             }
         }
+    }
+
+    /// Maximum log size across all servers
+    pub fn log_size(&self) -> usize {
+        self.saved
+            .iter()
+            .map(|p| p.raft_state_size())
+            .max()
+            .unwrap_or(0)
     }
 }
 

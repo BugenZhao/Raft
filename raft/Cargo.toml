@@ -6,28 +6,30 @@ authors = [
     "ShuNing <nolouch@gmail.com>",
     "Connor <zbk602423539@gmail.com>",
     "庄天翼 <zty0826@gmail.com>",
-    "MIT 6.824 <6824-staff@lists.csail.mit.edu>"
+    "MIT 6.824 <6824-staff@lists.csail.mit.edu>",
 ]
 edition = "2018"
 publish = false
 
 [dependencies]
 async-trait = "0.1"
+bincode = "1.3.3"
 futures = "0.3.16"
 futures-timer = "3.0"
 lazy_static = "1.4.0"
 log = "0.4"
-prost = "0.6"
+prost = "0.8"
 prost-derive = "0.6"
 rand = "0.7"
+serde = { version = "1.0.127", features = ["derive"] }
 
 labcodec = { path = "../labcodec" }
 labrpc = { path = "../labrpc" }
-linearizability = { path = "../linearizability"}
+linearizability = { path = "../linearizability" }
 
 
 [dev-dependencies]
 env_logger = "0.7"
 
 [build-dependencies]
-prost-build = "0.6"
+prost-build = "0.8"
