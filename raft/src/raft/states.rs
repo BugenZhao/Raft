@@ -1,6 +1,9 @@
 use crate::proto::raftpb::*;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fmt::Display};
+use std::{
+    collections::{HashSet, VecDeque},
+    fmt::Display,
+};
 
 /// State of a raft peer (for testing).
 #[derive(Default, Clone, Debug)]
@@ -44,12 +47,77 @@ impl Display for RoleState {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct Log {
+    inner: VecDeque<Entry>,
+    offset: usize,
+    snapshot_last_included_term: u64,
+}
+
+impl Log {
+    pub fn new() -> Self {
+        let dummy = Entry::default();
+        Self {
+            inner: vec![dummy].into(),
+            offset: 0,
+            snapshot_last_included_term: 0,
+        }
+    }
+
+    pub fn push(&mut self, entry: Entry) {
+        self.inner.push_back(entry);
+    }
+
+    pub fn get(&self, index: usize) -> Option<&Entry> {
+        if self.exists_index(index) {
+            self.inner.get(self.offset_index(index))
+        } else {
+            None
+        }
+    }
+
+    pub fn next_index(&self) -> usize {
+        self.inner.len() + self.offset
+    }
+
+    pub fn last_index(&self) -> usize {
+        self.next_index() - 1
+    }
+
+    pub fn last_term(&self) -> u64 {
+        self.inner
+            .back()
+            .map(|e| e.term)
+            .unwrap_or(self.snapshot_last_included_term)
+    }
+
+    pub fn pop_back(&mut self) -> Option<Entry> {
+        self.inner.pop_back()
+    }
+
+    pub fn start_at(&self, index: usize) -> Option<impl Iterator<Item = &Entry>> {
+        if self.exists_index(index) {
+            Some(self.inner.iter().skip(self.offset_index(index)))
+        } else {
+            None
+        }
+    }
+
+    pub fn exists_index(&self, index: usize) -> bool {
+        index >= self.offset
+    }
+
+    fn offset_index(&self, index: usize) -> usize {
+        index - self.offset
+    }
+}
+
 /// Persistent state of a raft peer.
 #[derive(Serialize, Deserialize)]
 pub struct PersistentState {
     pub current_term: u64,
     pub voted_for: Option<u64>,
-    pub log: Vec<Entry>,
+    pub log: Log,
 }
 
 impl PersistentState {
@@ -57,7 +125,7 @@ impl PersistentState {
         Self {
             current_term: 0,
             voted_for: None,
-            log: vec![Default::default()], // dummy entry at index 0
+            log: Log::new(),
         }
     }
 }

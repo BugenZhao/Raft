@@ -150,7 +150,7 @@ impl Raft {
     fn persist(&self) {
         // Your code here (2C).
         let data = bincode::serialize(&self.p).unwrap(); // todo: merge
-        self.persister.save_raft_state(data);
+        self.persister.save_raft_state(data); // todo: save snapshot
     }
 
     /// restore previously persisted state.
@@ -185,7 +185,7 @@ impl Raft {
 
                 self.p.log.push(entry); // will sync on next heartbeat
 
-                Ok((self.last_log_index(), self.last_log_term()))
+                Ok((self.p.log.last_index() as u64, self.p.log.last_term()))
             }
             _ => Err(Error::NotLeader),
         }
@@ -214,31 +214,22 @@ impl Raft {
             .filter(move |(i, _)| i != &self.me)
     }
 
-    /// Term of the last log entry.
-    fn last_log_term(&self) -> u64 {
-        self.p.log.last().unwrap().term
-    }
-
-    /// Index of the last log entry.
-    fn last_log_index(&self) -> u64 {
-        (self.p.log.len() - 1) as u64
-    }
-
     /// Make arguments for `AppendEntries` RPC by the index where entries `start_at`.
-    fn append_entries_args(&self, start_at: usize) -> AppendEntriesArgs {
+    fn append_entries_args(&self, start_at: usize) -> Option<AppendEntriesArgs> {
         assert!(start_at >= 1, "log index start from 1");
 
-        let entries = self.p.log[start_at..].iter().cloned().collect();
         let prev_log_index = start_at - 1;
+        let prev_log_term = self.p.log.get(prev_log_index)?.term;
+        let entries = self.p.log.start_at(start_at)?.cloned().collect();
 
-        AppendEntriesArgs {
+        Some(AppendEntriesArgs {
             term: self.p.current_term,
             leader_id: self.me as u64,
             prev_log_index: prev_log_index as u64,
-            prev_log_term: self.p.log[prev_log_index].term,
+            prev_log_term,
             entries,
             leader_commit_index: self.v.commit_index as u64,
-        }
+        })
     }
 
     /// Make arguments for `RequestVote` RPC.
@@ -246,8 +237,8 @@ impl Raft {
         RequestVoteArgs {
             term: self.p.current_term,
             candidate_id: self.me as u64,
-            last_log_index: self.last_log_index(),
-            last_log_term: self.last_log_term(),
+            last_log_index: self.p.log.last_index() as u64,
+            last_log_term: self.p.log.last_term(),
         }
     }
 }
@@ -285,7 +276,7 @@ impl Raft {
 
     /// Turn to leader, with reinitialized leader states.
     fn turn_leader(&mut self) {
-        let next_index = vec![self.p.log.len(); self.peers.len()];
+        let next_index = vec![self.p.log.next_index(); self.peers.len()];
         let match_index = vec![0; self.peers.len()];
         self.turn(RoleState::Leader {
             next_index,
@@ -323,9 +314,11 @@ impl Raft {
         if let RoleState::Leader { next_index, .. } = &self.role {
             for (i, peer) in self.other_peers() {
                 let tx = self.event_loop_tx().clone();
-                let args = self.append_entries_args(next_index[i]);
+                let args = self
+                    .append_entries_args(next_index[i])
+                    .expect("not enough entries in log");
                 let fut = peer.append_entries(&args);
-                let new_next_index = self.p.log.len();
+                let new_next_index = self.p.log.next_index();
                 let is_heart_beat = args.entries.is_empty(); // for logging only
 
                 self.executor
@@ -352,7 +345,7 @@ impl Raft {
         for i in (self.v.commit_index + 1)..=new_commit_index {
             let msg = ApplyMsg::Command {
                 index: i as u64,
-                command: self.p.log[i].data.clone(),
+                command: self.p.log.get(i).unwrap().data.clone(),
             };
             rlog!(self, "commit and apply msg at {}: {:?}", i, msg);
             self.apply_tx.unbounded_send(msg).unwrap();
@@ -370,14 +363,14 @@ impl Raft {
             let mut new_commit_index = self.v.commit_index;
 
             // find N as new commit index
-            for n in self.v.commit_index..self.p.log.len() {
+            for n in self.v.commit_index..self.p.log.next_index() {
                 let match_count = self
                     .other_peers()
                     .filter(|(i, _)| match_index[*i] >= n)
                     .count()
                     + 1;
                 let majority_match = match_count > self.peers.len() / 2;
-                let is_current_term = self.p.log[n].term == self.p.current_term;
+                let is_current_term = self.p.log.get(n).unwrap().term == self.p.current_term;
 
                 if is_current_term {
                     if majority_match {
@@ -477,7 +470,7 @@ impl Raft {
                 let not_voted_other = self.p.voted_for.map(|v| v == id) != Some(false);
                 // cand's log must be more up-to-date, or deny it
                 let cand_up_to_date = (args.last_log_term, args.last_log_index)
-                    >= (self.last_log_term(), self.last_log_index());
+                    >= (self.p.log.last_term(), self.p.log.last_index() as u64);
 
                 if not_voted_other && cand_up_to_date {
                     Some(id)
@@ -554,36 +547,38 @@ impl Raft {
                         if !contains_prev {
                             let conflict_index = {
                                 // for faster back up
-                                if args.prev_log_index >= self.p.log.len() as u64 {
+                                if args.prev_log_index >= self.p.log.next_index() as u64 {
                                     // our log is shorter than leader's
                                     // simply request from the very first missing one
-                                    self.p.log.len()
+                                    self.p.log.next_index()
                                 } else {
                                     // ignore ALL entries at `our_term`
                                     let our_term = our_term.unwrap();
                                     (0..args.prev_log_index as usize)
                                         .rev()
-                                        .find(|i| self.p.log.get(*i).unwrap().term != our_term)
-                                        .unwrap() // must exists thanks to dummy entry
+                                        .find(|i| self.p.log.get(*i).map(|e| e.term) != Some(our_term))
+                                        .unwrap() // must exists thanks to dummy entry // todo: correct after snapshot added?
                                         + 1
                                 }
                             };
                             (false, Some(conflict_index))
                         } else {
                             // valid request, pop stale entries and append new entries to be consistent with leader
-                            while self.p.log.len() > args.prev_log_index as usize + 1 {
-                                self.p.log.pop();
+                            while self.p.log.next_index() > args.prev_log_index as usize + 1 {
+                                let e = self.p.log.pop_back();
+                                assert!(e.is_some());
                             }
 
-                            let mut entries = args.entries;
-                            if !entries.is_empty() {
-                                rlog!(self, "overwrite {} entries", entries.len());
-                                self.p.log.append(&mut entries);
+                            if !args.entries.is_empty() {
+                                rlog!(self, "overwrite {} entries", args.entries.len());
+                                for entry in args.entries {
+                                    self.p.log.push(entry);
+                                }
                             }
 
                             if args.leader_commit_index as usize > self.v.commit_index {
-                                let new_commit_index =
-                                    args.leader_commit_index.min(self.last_log_index()) as usize;
+                                let new_commit_index = (args.leader_commit_index as usize)
+                                    .min(self.p.log.last_index());
                                 self.commit_and_apply_up_to(new_commit_index);
                             }
                             (true, None)
