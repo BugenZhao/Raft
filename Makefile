@@ -1,6 +1,6 @@
-export RUST_TEST_THREADS=1
 export RUST_BACKTRACE=1
 
+RUST_TEST_THREADS ?=1
 LOG_LEVEL ?= raft=info,percolator=info
 
 check:

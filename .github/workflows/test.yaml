@@ -11,4 +11,7 @@ jobs:
         with:
           toolchain: stable
       - name: Check and Test 2
+        env:
+          RUST_TEST_THREADS: 8
+          LOG_LEVEL: raft=error
         run: make test_2
