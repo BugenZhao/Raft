@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["SimplePersister",""]],"trait":[["Persister",""]]});

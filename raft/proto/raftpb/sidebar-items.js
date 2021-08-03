@@ -1,0 +1,1 @@
+initSidebarItems({"mod":[["raft",""]],"struct":[["AppendEntriesArgs",""],["AppendEntriesReply",""],["Entry",""],["InstallSnapshotArgs",""],["InstallSnapshotReply",""],["RequestVoteArgs",""],["RequestVoteReply",""]]});

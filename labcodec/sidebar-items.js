@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["decode","Decodes an message from the buffer."],["encode","Encodes the message to a `Vec<u8>`."]],"trait":[["Message","A labcodec message."]],"type":[["DecodeError","A message decoding error."],["EncodeError","A message encoding error."]]});

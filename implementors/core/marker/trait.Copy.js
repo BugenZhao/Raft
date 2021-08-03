@@ -1,0 +1,3 @@
+(function() {var implementors = {};
+implementors["raft"] = [{"text":"impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"raft/proto/kvraftpb/enum.Op.html\" title=\"enum raft::proto::kvraftpb::Op\">Op</a>","synthetic":false,"types":["raft::proto::kvraftpb::Op"]}];
+if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
