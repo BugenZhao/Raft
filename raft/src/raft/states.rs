@@ -47,37 +47,32 @@ impl Display for RoleState {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Log {
     inner: VecDeque<Entry>,
-    offset: usize,
+    in_snapshot_len: usize,
     snapshot_last_included_term: u64,
 }
 
 impl Log {
     pub fn new() -> Self {
-        let dummy = Entry::default();
         Self {
-            inner: vec![dummy].into(),
-            offset: 0,
+            inner: VecDeque::new(),
+            in_snapshot_len: 1,
             snapshot_last_included_term: 0,
         }
     }
 
-    pub fn push(&mut self, entry: Entry) {
-        self.inner.push_back(entry);
+    pub fn snapshot_last_included_term(&self) -> u64 {
+        self.snapshot_last_included_term
     }
 
-    pub fn get(&self, index: usize) -> Option<&Entry> {
-        if self.exists_index(index) {
-            self.inner.get(self.offset_index(index))
-        } else {
-            None
-        }
+    pub fn snapshot_last_included_index(&self) -> usize {
+        self.in_snapshot_len - 1
     }
 
     pub fn next_index(&self) -> usize {
-        self.inner.len() + self.offset
+        self.inner.len() + self.in_snapshot_len
     }
 
     pub fn last_index(&self) -> usize {
@@ -87,28 +82,53 @@ impl Log {
     pub fn last_term(&self) -> u64 {
         self.inner
             .back()
+            .map_or(self.snapshot_last_included_term, |e| e.term)
+    }
+
+    fn get(&self, index: usize) -> Option<&Entry> {
+        self.offset_index(index)
+            .and_then(|index| self.inner.get(index))
+    }
+
+    pub fn term_at(&self, index: usize) -> Option<u64> {
+        self.get(index)
             .map(|e| e.term)
-            .unwrap_or(self.snapshot_last_included_term)
+            .or((index == self.in_snapshot_len - 1).then(|| self.snapshot_last_included_term))
+    }
+
+    pub fn data_at(&self, index: usize) -> Option<&Vec<u8>> {
+        self.get(index).map(|e| &e.data)
+    }
+
+    pub fn start_at(&self, index: usize) -> Option<impl Iterator<Item = &Entry>> {
+        self.offset_index(index)
+            .map(|index| self.inner.iter().skip(index))
+    }
+
+    fn offset_index(&self, index: usize) -> Option<usize> {
+        index.checked_sub(self.in_snapshot_len)
+    }
+
+    pub fn push(&mut self, entry: Entry) {
+        self.inner.push_back(entry);
     }
 
     pub fn pop_back(&mut self) -> Option<Entry> {
         self.inner.pop_back()
     }
 
-    pub fn start_at(&self, index: usize) -> Option<impl Iterator<Item = &Entry>> {
-        if self.exists_index(index) {
-            Some(self.inner.iter().skip(self.offset_index(index)))
+    pub fn compact_to(&mut self, included_index: usize, included_term: u64) -> bool {
+        if included_index + 1 >= self.in_snapshot_len {
+            let n_compact = included_index + 1 - self.in_snapshot_len;
+            for _ in 0..n_compact {
+                self.inner.pop_front();
+            }
+            self.in_snapshot_len = included_index + 1;
+            self.snapshot_last_included_term = included_term;
+            true
         } else {
-            None
+            false
         }
-    }
-
-    pub fn exists_index(&self, index: usize) -> bool {
-        index >= self.offset
-    }
-
-    fn offset_index(&self, index: usize) -> usize {
-        index - self.offset
     }
 }
 
@@ -143,5 +163,20 @@ impl VolatileState {
             commit_index: 0,
             last_applied: 0,
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SnapshotState(pub Option<Vec<u8>>);
+
+impl SnapshotState {
+    pub fn new() -> Self {
+        Self(None)
+    }
+}
+
+impl From<Vec<u8>> for SnapshotState {
+    fn from(data: Vec<u8>) -> Self {
+        Self(Some(data))
     }
 }
