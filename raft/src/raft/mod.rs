@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -259,7 +260,7 @@ impl Raft {
             leader_id: self.me as u64,
             last_included_index: self.p.log.snapshot_last_included_index() as u64,
             last_included_term: self.p.log.snapshot_last_included_term(),
-            data: self.persister.snapshot().clone(),
+            data: self.persister.snapshot(),
         }
     }
 }
@@ -269,12 +270,14 @@ impl Raft {
     /// Update current term and clear `voted_for` state.
     /// WILL NOT touch the `role` state.
     fn update_term(&mut self, term: u64) {
-        if term > self.p.current_term {
-            rlog!(self, "update term to {}", term);
-            self.p.current_term = term;
-            self.p.voted_for = None;
-        } else if term < self.p.current_term {
-            panic!("update to a lower term")
+        match term.cmp(&self.p.current_term) {
+            Ordering::Less => panic!("update to a lower term"),
+            Ordering::Equal => {}
+            Ordering::Greater => {
+                rlog!(self, "update term to {}", term);
+                self.p.current_term = term;
+                self.p.voted_for = None;
+            }
         }
     }
 

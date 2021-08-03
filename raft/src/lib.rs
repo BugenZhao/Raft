@@ -1,4 +1,5 @@
 #![deny(clippy::all)]
+#![allow(clippy::single_match)]
 
 #[allow(unused_imports)]
 #[macro_use]

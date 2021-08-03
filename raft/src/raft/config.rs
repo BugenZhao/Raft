@@ -254,14 +254,12 @@ impl Config {
             }
             if let Some(start_term) = start_term {
                 let rafts = self.rafts.lock().unwrap();
-                for r in rafts.iter() {
-                    if let Some(rf) = r {
-                        let term = rf.term();
-                        if term > start_term {
-                            // someone has moved on
-                            // can no longer guarantee that we'll "win"
-                            return None;
-                        }
+                for rf in rafts.iter().flatten() {
+                    let term = rf.term();
+                    if term > start_term {
+                        // someone has moved on
+                        // can no longer guarantee that we'll "win"
+                        return None;
                     }
                 }
             }
@@ -545,10 +543,8 @@ impl Config {
 impl Drop for Config {
     fn drop(&mut self) {
         if let Ok(rafts) = self.rafts.try_lock() {
-            for r in rafts.iter() {
-                if let Some(rf) = r {
-                    rf.kill();
-                }
+            for rf in rafts.iter().flatten() {
+                rf.kill();
             }
         }
 

@@ -110,9 +110,9 @@ impl Log {
     ///
     /// Compared to `get`, this method is also able to get the last included term in the snapshot.
     pub fn term_at(&self, index: usize) -> Option<u64> {
-        self.get(index)
-            .map(|e| e.term)
-            .or((index == self.in_snapshot_len - 1).then(|| self.snapshot_last_included_term))
+        self.get(index).map(|e| e.term).or_else(|| {
+            (index == self.in_snapshot_len - 1).then(|| self.snapshot_last_included_term)
+        })
     }
 
     /// Get the data of the entry at given index.

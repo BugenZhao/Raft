@@ -281,7 +281,7 @@ fn test_concurrent_starts_2b() {
         }
 
         let mut cmds = vec![];
-        for index in idxes.into_iter().filter_map(|i| i) {
+        for index in idxes.into_iter().flatten() {
             if let Some(cmd) = cfg.wait(index, servers, Some(term)) {
                 cmds.push(cmd.x);
             } else {
@@ -712,11 +712,9 @@ fn test_figure_8_2c() {
         let mut leader = None;
         for i in 0..servers {
             let mut rafts = cfg.rafts.lock().unwrap();
-            if let Some(raft) = rafts.get_mut(i) {
-                if let Some(raft) = raft {
-                    if raft.start(&random_entry(&mut random)).is_ok() {
-                        leader = Some(i);
-                    }
+            if let Some(Some(raft)) = rafts.get_mut(i) {
+                if raft.start(&random_entry(&mut random)).is_ok() {
+                    leader = Some(i);
                 }
             }
         }
