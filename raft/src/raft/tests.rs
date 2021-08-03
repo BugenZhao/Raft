@@ -1041,7 +1041,7 @@ fn test_unreliable_churn_2c() {
 fn snap_common(name: &str, disconnect: bool, reliable: bool, crash: bool) {
     const MAX_LOG_SIZE: usize = 2000;
 
-    let iters = 30;
+    let iters = 10;
     let servers = 3;
     let mut cfg = Config::new_with_snapshot(servers, !reliable);
 

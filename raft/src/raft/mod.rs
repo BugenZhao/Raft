@@ -22,12 +22,12 @@ use crate::proto::raftpb::*;
 
 pub use self::states::State;
 
+/// Message sent to the service.
 #[derive(Debug)]
 pub enum ApplyMsg {
-    Command {
-        index: u64,
-        command: Vec<u8>,
-    },
+    /// Ask service to apply this command.
+    Command { index: u64, command: Vec<u8> },
+    /// Ask service to install this snapshot.
     Snapshot {
         index: u64,
         term: u64,
@@ -37,6 +37,7 @@ pub enum ApplyMsg {
 
 type RpcResult<T> = labrpc::Result<T>;
 
+/// Event run by a Raft peer in a event loop.
 #[derive(Debug)]
 pub enum Event {
     ElectionTimeout,
@@ -59,6 +60,7 @@ pub enum Event {
     },
 }
 
+/// Action for Raft peer to control the timer.
 #[derive(Debug)]
 pub enum TimerAction {
     ResetTimeout,
@@ -87,8 +89,6 @@ pub struct Raft {
     role: RoleState,
     /// Persistent state: `current_form`, `voted_for`, `log`.
     p: PersistentState,
-    ///
-    ss: SnapshotState,
     /// Volatile state: `commit_index`, `last_applied`.
     v: VolatileState,
 
@@ -129,8 +129,6 @@ impl Raft {
         persister: Box<dyn Persister>,
         apply_tx: UnboundedSender<ApplyMsg>,
     ) -> Raft {
-        let (raft_state, snapshot_state) = (persister.raft_state(), persister.snapshot());
-
         // Your initialization code here (2A, 2B, 2C).
         let mut rf = Raft {
             peers,
@@ -138,15 +136,16 @@ impl Raft {
             me,
             role: RoleState::Follower,
             p: PersistentState::new(),
-            ss: SnapshotState::new(),
             v: VolatileState::new(),
             event_loop_tx: None,
             timer_action_tx: None,
             apply_tx,
             executor: SHARED_EXECUTOR.clone(),
         };
+
         // may initialize from state persisted before a crash
-        rf.restore(&raft_state, &snapshot_state);
+        let raft_state = rf.persister.raft_state();
+        rf.restore(&raft_state);
 
         rf.turn_follower();
         rf
@@ -155,25 +154,25 @@ impl Raft {
     /// save Raft's persistent state to stable storage,
     /// where it can later be retrieved after a crash and restart.
     /// see paper's Figure 2 for a description of what should be persistent.
-    fn persist(&self) {
+    fn persist(&self, snapshot: Option<Vec<u8>>) {
         // Your code here (2C).
-        let p = bincode::serialize(&self.p).unwrap(); // todo: merge
-        let ss = bincode::serialize(&self.ss).unwrap();
-        self.persister.save_state_and_snapshot(p, ss);
+        let p = bincode::serialize(&self.p).unwrap();
+
+        if let Some(ss) = snapshot {
+            self.persister.save_state_and_snapshot(p, ss);
+        } else {
+            self.persister.save_raft_state(p);
+        }
     }
 
     /// restore previously persisted state.
-    fn restore(&mut self, p: &[u8], ss: &[u8]) {
+    fn restore(&mut self, p: &[u8]) {
         // Your code here (2C).
         if let Ok(p) = bincode::deserialize(p) {
             rlog!(self, "restored raft state");
             self.p = p;
             self.v.commit_index = self.p.log.snapshot_last_included_index();
             self.v.last_applied = self.v.commit_index;
-        }
-        if let Ok(ss) = bincode::deserialize(ss) {
-            rlog!(self, "restored snapshot state");
-            self.ss = ss;
         }
     }
 
@@ -243,16 +242,6 @@ impl Raft {
         })
     }
 
-    fn install_snapshot_args(&self) -> InstallSnapshotArgs {
-        InstallSnapshotArgs {
-            term: self.p.current_term,
-            leader_id: self.me as u64,
-            last_included_index: self.p.log.snapshot_last_included_index() as u64,
-            last_included_term: self.p.log.snapshot_last_included_term(),
-            data: self.ss.0.as_ref().cloned().expect("no snapshot"),
-        }
-    }
-
     /// Make arguments for `RequestVote` RPC.
     fn request_vote_args(&self) -> RequestVoteArgs {
         RequestVoteArgs {
@@ -260,6 +249,17 @@ impl Raft {
             candidate_id: self.me as u64,
             last_log_index: self.p.log.last_index() as u64,
             last_log_term: self.p.log.last_term(),
+        }
+    }
+
+    /// Make arguments for `InstallSnapshot` RPC.
+    fn install_snapshot_args(&self) -> InstallSnapshotArgs {
+        InstallSnapshotArgs {
+            term: self.p.current_term,
+            leader_id: self.me as u64,
+            last_included_index: self.p.log.snapshot_last_included_index() as u64,
+            last_included_term: self.p.log.snapshot_last_included_term(),
+            data: self.persister.snapshot().clone(),
         }
     }
 }
@@ -325,7 +325,7 @@ impl Raft {
         }
     }
 
-    /// Sync log by appending entries to all other peers.
+    /// Sync log by appending entries OR installing snapshot to all other peers.
     /// Will return immediately, while push all replies into event loop asynchronously.
     ///
     /// Should ONLY be called by leader on heart beat.
@@ -356,6 +356,8 @@ impl Raft {
                     // not enough entries in our log, try to install snapshot
                     let args = self.install_snapshot_args();
                     let fut = peer.install_snapshot(&args);
+
+                    // optimistically assume the snapshot to be successfully installed
                     let new_next_index = self.p.log.snapshot_last_included_index() + 1;
 
                     self.executor
@@ -430,6 +432,10 @@ impl Raft {
             .unbounded_send(TimerAction::ResetTimeout);
     }
 
+    /// Service want Raft peer to conditionally install snapshot given from peer
+    /// and applied by us previously.
+    ///
+    /// Returns whether we grant to install this snapshot.
     fn cond_install_peer_snapshot(
         &mut self,
         last_included_term: u64,
@@ -442,37 +448,41 @@ impl Raft {
                 self.p.log.snapshot_last_included_index(),
             )
         {
-            self.install_snapshot(true, last_included_index, last_included_term, snapshot);
-            true
+            // up to date, install now
+            self.install_snapshot(true, last_included_index, last_included_term, snapshot)
         } else {
             false
         }
     }
 
+    /// Compact the log and set `commit_index` up to the last index of the snapshot.
+    ///
+    /// Will do nothing if the compaction is failed.
+    /// Returns whether the compaction is successful.
     fn install_snapshot(
         &mut self,
         from_peer: bool,
         included_index: usize,
         included_term: u64,
         snapshot: Vec<u8>,
-    ) {
+    ) -> bool {
         rlog!(
-            level: warn,
+            level: info,
             self,
             "install snapshot: from peer({}), included_index({})",
             from_peer,
             included_index,
         );
         if self.p.log.compact_to(included_index, included_term) {
-            self.ss = SnapshotState::from(snapshot);
-            // will be persisted on next heart beat
-
             if included_index >= self.v.commit_index {
                 self.v.commit_index = included_index;
                 self.v.last_applied = included_index;
             }
+            self.persist(Some(snapshot)); // persist immediately with snapshot
+            true
         } else {
-            rlog!(level: error, self, "failed to install snapshot!");
+            rlog!(level: warn, self, "failed to install snapshot");
+            false
         }
     }
 }
@@ -504,7 +514,7 @@ impl Raft {
                 new_next_index,
                 is_heart_beat: _,
             } => self.handle_append_entries_reply(from, reply, new_next_index),
-            Event::ForcePersist => self.persist(),
+            Event::ForcePersist => self.persist(None),
             Event::InstallSnapshotReply {
                 from,
                 reply,
@@ -536,7 +546,7 @@ impl Raft {
             }
             _ => {} // no heart beat for non-leader
         }
-        self.persist(); // persist data on heart beat
+        self.persist(None); // persist data on heart beat
     }
 
     /// RPC request for `RequestVote`.
@@ -646,7 +656,7 @@ impl Raft {
                                     (0..args.prev_log_index as usize)
                                         .rev()
                                         .find(|i| self.p.log.term_at(*i) != Some(our_term))
-                                        .unwrap() // must exists thanks to dummy entry // todo: correct after snapshot added?
+                                        .unwrap() // must exists thanks to dummy entry
                                         + 1
                                 }
                             };
@@ -737,6 +747,7 @@ impl Raft {
         }
     }
 
+    /// RPC request for `InstallSnapshot`.
     fn handle_install_snapshot_request(
         &mut self,
         args: InstallSnapshotArgs,
@@ -750,14 +761,15 @@ impl Raft {
             }
             match &mut self.role {
                 RoleState::Follower => {
-                    self.reset_timeout();
+                    self.reset_timeout(); // reset election timeout as if we are receiving an `AppendEntries`
 
+                    // construct an `ApplyMsg` to the service
                     let msg = ApplyMsg::Snapshot {
                         index: args.last_included_index,
                         term: args.last_included_term,
                         snapshot: args.data,
                     };
-                    // just send to service, and it will call our `cond_install_snapshot` soon
+                    // just send it to service, and it will call our `cond_install_snapshot` soon
                     self.apply_tx.unbounded_send(msg).unwrap();
                 }
                 _ => {}
@@ -769,6 +781,7 @@ impl Raft {
         })
     }
 
+    /// Reply from our prior `InstallSnapshot` RPC request.
     fn handle_install_snapshot_reply(
         &mut self,
         from: usize,
@@ -785,7 +798,8 @@ impl Raft {
                 match &mut self.role {
                     RoleState::Leader { next_index, .. } => {
                         // assume the snapshot will be installed successfully anyway
-                        // however, do not update match index or try to commit
+                        // however, do not update match index or try to commit,
+                        // which can be perfectly handled by log syncing on heart beat
                         next_index[from] = new_next_index;
                     }
                     _ => {}
