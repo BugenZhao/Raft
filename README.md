@@ -1,3 +1,20 @@
+# Raft
+
+[![Test](https://github.com/BugenZhao/Raft/actions/workflows/test.yaml/badge.svg)](https://github.com/BugenZhao/Raft/actions/workflows/test.yaml)
+
+A solution to _"6.824 Lab 2: Raft"_ and _"6.824 Lab 3: Fault-tolerant Key/Value Service"_ from MIT.
+
+Base code and lab parts marked with `*` are migrated from [pingcap/talent-plan](https://github.com/pingcap/talent-plan).
+
+## Roadmap
+
+- [x] Lab 2
+  - [x] Part 2A: leader election \*
+  - [x] Part 2B: log \*
+  - [x] Part 2C: persistence \*
+  - [x] Part 2D: log compaction
+- [ ] Lab 3
+
 # Distributed Systems in Rust
 
 A training course about the distributed systems in [Rust].
@@ -5,7 +22,7 @@ A training course about the distributed systems in [Rust].
 Subjects covered include:
 
 - [Raft consensus algorithm] (including a fault-tolerant key-value storage service
-using Raft)
+  using Raft)
 - [Percolator transaction model]
 
 After completing this course you will have the knowledge to implement a basic
@@ -42,10 +59,11 @@ understand please [file issues].
 [CC-BY 4.0](https://opendefinition.org/licenses/cc-by/)
 
 <!-- links -->
+
 [rust]: ../rust/README.md
 [file issues]: https://github.com/pingcap/talent-plan/issues/
-[Deep Dive TiKV]: https://tikv.github.io/deep-dive-tikv/overview/introduction.html
-[TiKV]: https://github.com/tikv/tikv/
-[Rust]: https://www.rust-lang.org/
-[Raft consensus algorithm]: raft/README.md
-[Percolator transaction model]: percolator/README.md
+[deep dive tikv]: https://tikv.github.io/deep-dive-tikv/overview/introduction.html
+[tikv]: https://github.com/tikv/tikv/
+[rust]: https://www.rust-lang.org/
+[raft consensus algorithm]: raft/README.md
+[percolator transaction model]: percolator/README.md
