@@ -1,3 +1,3 @@
 (function() {var implementors = {};
-implementors["raft"] = [{"text":"impl <a class=\"trait\" href=\"https://docs.rs/lazy_static/1.4.0/lazy_static/trait.LazyStatic.html\" title=\"trait lazy_static::LazyStatic\">LazyStatic</a> for <a class=\"struct\" href=\"raft/raft/struct.SHARED_EXECUTOR.html\" title=\"struct raft::raft::SHARED_EXECUTOR\">SHARED_EXECUTOR</a>","synthetic":false,"types":["raft::raft::SHARED_EXECUTOR"]}];
+implementors["raft"] = [{"text":"impl <a class=\"trait\" href=\"https://docs.rs/lazy_static/1.4.0/lazy_static/trait.LazyStatic.html\" title=\"trait lazy_static::LazyStatic\">LazyStatic</a> for <a class=\"struct\" href=\"raft/struct.SHARED_EXECUTOR.html\" title=\"struct raft::SHARED_EXECUTOR\">SHARED_EXECUTOR</a>","synthetic":false,"types":["raft::SHARED_EXECUTOR"]}];
 if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()

@@ -31,9 +31,9 @@
 <span class="kw">mod</span> <span class="ident">proto</span>;
 <span class="kw">pub</span> <span class="kw">mod</span> <span class="ident">raft</span>;
 
-<span class="doccomment">/// A place holder for suppressing unused_variables warning.</span>
-<span class="kw">fn</span> <span class="ident">your_code_here</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span>(<span class="kw">_</span>: <span class="ident">T</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="op">!</span> {
-    <span class="macro">unimplemented!</span>()
+<span class="kw">pub</span> <span class="kw">type</span> <span class="ident">Executor</span> <span class="op">=</span> <span class="ident">futures::executor::ThreadPool</span>;
+<span class="macro">lazy_static::lazy_static!</span> {
+    <span class="kw">pub</span> <span class="kw">static</span> <span class="kw-2">ref</span> <span class="ident">SHARED_EXECUTOR</span>: <span class="ident">Executor</span> <span class="op">=</span> <span class="ident">Executor::new</span>().<span class="ident">unwrap</span>();
 }
 </pre></div>
 </section><section id="search" class="content hidden"></section><div id="rustdoc-vars" data-root-path="../../" data-current-crate="raft" data-search-index-js="../../search-index.js" data-search-js="../../search.js"></div>

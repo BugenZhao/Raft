@@ -1,1 +1,1 @@
-initSidebarItems({"fn":[["your_code_here","A place holder for suppressing unused_variables warning."]],"mod":[["kvraft",""],["proto",""],["raft",""]]});
+initSidebarItems({"macro":[["kvlog","Macro for logging message combined with state of the Raft peer."]],"mod":[["kvraft",""],["proto",""],["raft",""]],"struct":[["SHARED_EXECUTOR",""]],"type":[["Executor",""]]});
