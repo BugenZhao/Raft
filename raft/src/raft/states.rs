@@ -106,6 +106,15 @@ impl Log {
             .and_then(|index| self.inner.get(index))
     }
 
+    #[allow(dead_code)]
+    pub fn replace(&mut self, index: usize, entry: Entry) -> Option<Entry> {
+        self.offset_index(index).and_then(move |index| {
+            self.inner
+                .get_mut(index)
+                .map(|old| std::mem::replace(old, entry))
+        })
+    }
+
     /// Get the term of the entry at given index.
     ///
     /// Compared to `get`, this method is also able to get the last included term in the snapshot.

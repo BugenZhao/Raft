@@ -582,8 +582,8 @@ impl Raft {
             }
         };
 
-        if let Some(v) = vote_for {
-            self.p.voted_for = Some(v);
+        if vote_for.is_some() {
+            self.p.voted_for = vote_for;
             self.reset_timeout(); // reset election timeout on voting
         }
 
@@ -666,16 +666,24 @@ impl Raft {
                             (false, Some(conflict_index))
                         } else {
                             // valid request, pop stale entries and append new entries to be consistent with leader
-                            while self.p.log.next_index() > args.prev_log_index as usize + 1 {
-                                let e = self.p.log.pop_back();
-                                assert!(e.is_some());
-                            }
+                            let contains_leader_all =
+                                args.entries.iter().enumerate().all(|(i, entry)| {
+                                    let index = args.prev_log_index as usize + 1 + i;
+                                    self.p.log.term_at(index) == Some(entry.term)
+                                });
 
-                            if !args.entries.is_empty() {
-                                rlog!(self, "overwrite {} entries", args.entries.len());
-                                for entry in args.entries {
-                                    self.p.log.push(entry);
+                            if contains_leader_all {
+                                if !args.entries.is_empty() {
+                                    rlog!(level: warn, self, "outdated append entries request");
                                 }
+                            } else {
+                                while self.p.log.next_index() > args.prev_log_index as usize + 1 {
+                                    let _ = self.p.log.pop_back().expect("entry must exist");
+                                }
+                                if !args.entries.is_empty() {
+                                    rlog!(self, "overwrite {} entries", args.entries.len());
+                                }
+                                args.entries.into_iter().for_each(|e| self.p.log.push(e));
                             }
 
                             if args.leader_commit_index as usize > self.v.commit_index {
