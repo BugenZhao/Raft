@@ -1087,9 +1087,11 @@ fn snap_common(name: &str, disconnect: bool, reliable: bool, crash: bool) {
             cfg.start1(victim);
             cfg.connect(victim);
             cfg.one(random_entry(&mut random), servers, true);
-            cfg.check_one_leader();
+            leader1 = cfg.check_one_leader();
         }
     }
+
+    cfg.end();
 }
 
 #[test]
