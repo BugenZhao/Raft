@@ -20,6 +20,7 @@ use self::errors::*;
 use self::persister::*;
 use self::states::*;
 use crate::proto::raftpb::*;
+use crate::{Executor, SHARED_EXECUTOR};
 
 pub use self::states::State;
 
@@ -67,11 +68,6 @@ pub enum TimerAction {
     ResetTimeout,
 }
 
-type Executor = futures::executor::ThreadPool;
-lazy_static::lazy_static! {
-    static ref SHARED_EXECUTOR: Executor = Executor::new().unwrap();
-}
-
 /// A single Raft peer.
 pub struct Raft {
     /// RPC end points of all peers.
@@ -108,7 +104,7 @@ pub struct Raft {
 /// Macro for logging message combined with state of the Raft peer.
 macro_rules! rlog {
     (level: $level:ident, $raft:expr, $($arg:tt)+) => {
-        ::log::$level!("[#{} @{} as {}] {}", $raft.me, $raft.p.current_term, $raft.role, format_args!($($arg)+))
+        ::log::$level!("RF [#{} @{} as {}] {}", $raft.me, $raft.p.current_term, $raft.role, format_args!($($arg)+))
     };
     ($raft:expr, $($arg:tt)+) => {
         rlog!(level: info, $raft, $($arg)+)
@@ -834,7 +830,7 @@ pub struct Node {
     /// Notify the event loop to shutdown
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     /// Thread pool executor shared with inner Raft instance.
-    executor: Executor,
+    pub executor: Executor,
 }
 
 impl Node {

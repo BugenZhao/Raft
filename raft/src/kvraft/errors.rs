@@ -2,6 +2,7 @@ use std::{error, fmt, result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
+    Raft(crate::raft::errors::Error),
     NoLeader,
 }
 
@@ -13,7 +14,8 @@ impl fmt::Display for Error {
 
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match *self {
+        match self {
+            Error::Raft(e) => e.source(),
             Error::NoLeader => None,
         }
     }

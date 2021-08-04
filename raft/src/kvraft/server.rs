@@ -1,14 +1,59 @@
-use futures::channel::mpsc::unbounded;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
+use futures::channel::mpsc::{unbounded, UnboundedReceiver};
+use futures::channel::oneshot;
+use futures::task::SpawnExt;
+use futures::StreamExt;
+use uuid::Uuid;
+
+use super::errors::{Error, Result};
 use crate::proto::kvraftpb::*;
-use crate::raft;
+use crate::raft::{self, ApplyMsg};
+use crate::Executor;
+
+#[macro_export]
+/// Macro for logging message combined with state of the Raft peer.
+macro_rules! kvlog {
+    (level: $level:ident, $kv:expr, $($arg:tt)+) => {{
+        let leader_desc = $kv.raft.is_leader().then(|| "Leader").unwrap_or("Non-leader");
+        ::log::$level!("KV [#{} @{} as {}] {}", $kv.me, $kv.raft.term(), leader_desc, format_args!($($arg)+))
+    }};
+    ($kv:expr, $($arg:tt)+) => {
+        kvlog!(level: info, $kv, $($arg)+)
+    };
+}
+
+#[derive(Debug)]
+enum NotifyReply {
+    Get { value: String },
+    Put,
+    Append,
+}
+
+impl NotifyReply {
+    fn value(self) -> String {
+        match self {
+            NotifyReply::Get { value } => value,
+            _ => panic!("called `NotifyReply::value` on a non-`Get` value"),
+        }
+    }
+}
+
+enum ApplyState {
+    Applied,
+    ToApply(Option<oneshot::Sender<NotifyReply>>),
+}
 
 pub struct KvServer {
-    pub rf: raft::Node,
+    pub raft: raft::Node,
     me: usize,
     // snapshot if log grows this big
-    maxraftstate: Option<usize>,
+    #[allow(dead_code)]
+    max_raft_state: Option<usize>,
     // Your definitions here.
+    store: HashMap<String, String>,
+    notifiers: HashMap<String, ApplyState>,
 }
 
 impl KvServer {
@@ -16,49 +61,142 @@ impl KvServer {
         servers: Vec<crate::proto::raftpb::RaftClient>,
         me: usize,
         persister: Box<dyn raft::persister::Persister>,
-        maxraftstate: Option<usize>,
-    ) -> KvServer {
+        max_raft_state: Option<usize>,
+    ) -> (KvServer, UnboundedReceiver<ApplyMsg>) {
         // You may need initialization code here.
 
-        let (tx, apply_ch) = unbounded();
-        let rf = raft::Raft::new(servers, me, persister, tx);
+        let (apply_tx, apply_rx) = unbounded();
+        let raft_inner = raft::Raft::new(servers, me, persister, apply_tx);
+        let raft = raft::Node::new(raft_inner);
 
-        crate::your_code_here((rf, maxraftstate, apply_ch))
+        let kv = KvServer {
+            raft,
+            me,
+            max_raft_state,
+            store: HashMap::new(),
+            notifiers: HashMap::new(),
+        };
+        (kv, apply_rx)
     }
 }
 
 impl KvServer {
-    /// Only for suppressing deadcode warnings.
-    #[doc(hidden)]
-    pub fn __suppress_deadcode(&mut self) {
-        let _ = &self.me;
-        let _ = &self.maxraftstate;
+    fn start(&mut self, command: Command) -> Result<oneshot::Receiver<NotifyReply>> {
+        self.raft.start(&command).map_err(Error::Raft)?;
+
+        let id = command.id;
+        let (tx, rx) = oneshot::channel();
+        self.notifiers.insert(id, ApplyState::ToApply(Some(tx)));
+
+        Ok(rx)
+    }
+
+    fn start_get(&mut self, req: GetRequest) -> Result<oneshot::Receiver<NotifyReply>> {
+        let command = Command {
+            id: Uuid::new_v4().to_string(),
+            value: Some(command::Value::Get(req)),
+        };
+        self.start(command)
+    }
+
+    fn start_put_append(
+        &mut self,
+        req: PutAppendRequest,
+    ) -> Result<oneshot::Receiver<NotifyReply>> {
+        let command = Command {
+            id: Uuid::new_v4().to_string(),
+            value: Some(command::Value::PutAppend(req)),
+        };
+        self.start(command)
+    }
+
+    fn apply(&mut self, msg: ApplyMsg) {
+        match msg {
+            ApplyMsg::Command { index: _, command } => {
+                let Command { id, value } = labcodec::decode(&command).unwrap();
+                let op_value = value.unwrap();
+                let state = self
+                    .notifiers
+                    .entry(id)
+                    .or_insert(ApplyState::ToApply(None));
+
+                match state {
+                    ApplyState::Applied => {
+                        kvlog!(level: warn, self, "ignore applied command");
+                    }
+                    ApplyState::ToApply(notifier) => {
+                        let reply = match op_value {
+                            command::Value::PutAppend(req) => match req.op() {
+                                Op::Put => {
+                                    kvlog!(self, "Put: {:?}", req);
+                                    self.store.insert(req.key, req.value);
+                                    NotifyReply::Put
+                                }
+                                Op::Append => {
+                                    kvlog!(self, "Append: {:?}", req);
+                                    self.store.entry(req.key).or_default().push_str(&req.value);
+                                    NotifyReply::Append
+                                }
+                                _ => unreachable!(),
+                            },
+                            command::Value::Get(req) => {
+                                let value = self.store.get(&req.key).cloned().unwrap_or_default();
+                                kvlog!(self, "Get: {:?} => {:?}", req, value);
+                                NotifyReply::Get { value }
+                            }
+                        };
+                        if let Some(notifier) = notifier.take() {
+                            let _ = notifier.send(reply);
+                        }
+                        // mark as applied
+                        *state = ApplyState::Applied;
+                    }
+                }
+            }
+            ApplyMsg::Snapshot { .. } => todo!("snapshot not implemented"),
+        }
     }
 }
 
-// Choose concurrency paradigm.
-//
-// You can either drive the kv server by the rpc framework,
-//
-// ```rust
-// struct Node { server: Arc<Mutex<KvServer>> }
-// ```
-//
-// or spawn a new thread runs the kv server and communicate via
-// a channel.
-//
-// ```rust
-// struct Node { sender: Sender<Msg> }
-// ```
 #[derive(Clone)]
 pub struct Node {
     // Your definitions here.
+    kv: Arc<RwLock<KvServer>>,
+    executor: Executor,
 }
 
 impl Node {
-    pub fn new(kv: KvServer) -> Node {
+    pub fn new(kv: KvServer, apply_rx: UnboundedReceiver<ApplyMsg>) -> Node {
         // Your code here.
-        crate::your_code_here(kv);
+        let executor = kv.raft.executor.clone();
+
+        let node = Node {
+            kv: Arc::new(RwLock::new(kv)),
+            executor,
+        };
+        node.start_applier(apply_rx);
+
+        node
+    }
+
+    pub fn start_applier(&self, mut apply_rx: UnboundedReceiver<ApplyMsg>) {
+        let kv = Arc::clone(&self.kv);
+
+        self.executor
+            .spawn(async move {
+                loop {
+                    match apply_rx.next().await {
+                        Some(msg) => {
+                            kv.write().unwrap().apply(msg);
+                        }
+                        None => {
+                            warn!("applier exited");
+                            break;
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn applier");
     }
 
     /// the tester calls kill() when a KVServer instance won't
@@ -72,37 +210,60 @@ impl Node {
         // self.server.kill();
 
         // Your code here, if desired.
+        self.kv.read().unwrap().raft.kill();
     }
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        self.get_state().term()
+        self.kv.read().unwrap().raft.term()
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        self.get_state().is_leader()
+        self.kv.read().unwrap().raft.is_leader()
     }
 
     pub fn get_state(&self) -> raft::State {
         // Your code here.
-        raft::State {
-            ..Default::default()
-        }
+        self.kv.read().unwrap().raft.get_state()
     }
 }
 
 #[async_trait::async_trait]
 impl KvService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
-    async fn get(&self, arg: GetRequest) -> labrpc::Result<GetReply> {
+    async fn get(&self, req: GetRequest) -> labrpc::Result<GetReply> {
         // Your code here.
-        crate::your_code_here(arg)
+        let mut reply = GetReply::default();
+        let start_result = self.kv.write().unwrap().start_get(req);
+
+        match start_result {
+            Ok(notifier) => match notifier.await {
+                Ok(r) => reply.value = r.value(),
+                Err(e) => reply.err = e.to_string(),
+            },
+            Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
+            Err(e) => reply.err = e.to_string(),
+        }
+
+        Ok(reply)
     }
 
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
-    async fn put_append(&self, arg: PutAppendRequest) -> labrpc::Result<PutAppendReply> {
+    async fn put_append(&self, req: PutAppendRequest) -> labrpc::Result<PutAppendReply> {
         // Your code here.
-        crate::your_code_here(arg)
+        let mut reply = PutAppendReply::default();
+        let start_result = self.kv.write().unwrap().start_put_append(req);
+
+        match start_result {
+            Ok(notifier) => match notifier.await {
+                Ok(_r) => {}
+                Err(e) => reply.err = e.to_string(),
+            },
+            Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
+            Err(e) => reply.err = e.to_string(),
+        }
+
+        Ok(reply)
     }
 }

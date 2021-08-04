@@ -280,9 +280,9 @@ impl Config {
         let p = Arc::new(sp);
         servers.saved[i] = p.clone();
 
-        let kv = server::KvServer::new(ends, i, Box::new(p), self.maxraftstate);
-        let rf_node = kv.rf.clone();
-        let kv_node = server::Node::new(kv);
+        let (kv, apply_rx) = server::KvServer::new(ends, i, Box::new(p), self.maxraftstate);
+        let rf_node = kv.raft.clone();
+        let kv_node = server::Node::new(kv, apply_rx);
         servers.kvservers[i] = Some(kv_node.clone());
 
         let mut builder = labrpc::ServerBuilder::new(format!("{}", i));

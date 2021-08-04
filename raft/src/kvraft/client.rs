@@ -1,6 +1,8 @@
 use std::fmt;
 
-use crate::proto::kvraftpb::*;
+use futures::executor::block_on;
+
+use crate::proto::kvraftpb::{self, *};
 
 enum Op {
     Put(String, String),
@@ -22,8 +24,25 @@ impl fmt::Debug for Clerk {
 impl Clerk {
     pub fn new(name: String, servers: Vec<KvClient>) -> Clerk {
         // You'll have to add code here.
-        // Clerk { name, servers }
-        crate::your_code_here((name, servers))
+        Clerk { name, servers }
+    }
+
+    pub async fn get_async(&self, key: String) -> String {
+        let args = GetRequest { key };
+        let mut iter = self.servers.iter().cycle();
+        let value = loop {
+            let server = iter.next().unwrap();
+            match server.get(&args).await {
+                Ok(reply) => {
+                    if reply.wrong_leader || !reply.err.is_empty() {
+                        continue;
+                    }
+                    break reply.value;
+                }
+                Err(_) => continue,
+            }
+        };
+        value
     }
 
     /// fetch the current value for a key.
@@ -34,23 +53,55 @@ impl Clerk {
     // if let Some(reply) = self.servers[i].get(args).wait() { /* do something */ }
     pub fn get(&self, key: String) -> String {
         // You will have to modify this function.
-        crate::your_code_here(key)
+        block_on(self.get_async(key))
     }
 
     /// shared by Put and Append.
     //
     // you can send an RPC with code like this:
     // let reply = self.servers[i].put_append(args).unwrap();
-    fn put_append(&self, op: Op) {
+    async fn put_append_async(&self, op: Op) {
         // You will have to modify this function.
-        crate::your_code_here(op)
+        let args = match op {
+            Op::Put(key, value) => PutAppendRequest {
+                key,
+                value,
+                op: kvraftpb::Op::Put as i32,
+            },
+            Op::Append(key, value) => PutAppendRequest {
+                key,
+                value,
+                op: kvraftpb::Op::Append as i32,
+            },
+        };
+        let mut iter = self.servers.iter().cycle();
+        loop {
+            let server = iter.next().unwrap();
+            match server.put_append(&args).await {
+                Ok(reply) => {
+                    if reply.wrong_leader || !reply.err.is_empty() {
+                        continue;
+                    }
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    pub async fn put_async(&self, key: String, value: String) {
+        self.put_append_async(Op::Put(key, value)).await
     }
 
     pub fn put(&self, key: String, value: String) {
-        self.put_append(Op::Put(key, value))
+        block_on(self.put_async(key, value))
+    }
+
+    pub async fn append_async(&self, key: String, value: String) {
+        self.put_append_async(Op::Append(key, value)).await
     }
 
     pub fn append(&self, key: String, value: String) {
-        self.put_append(Op::Append(key, value))
+        block_on(self.append_async(key, value))
     }
 }

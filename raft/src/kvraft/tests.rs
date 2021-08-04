@@ -646,30 +646,30 @@ fn test_one_partition_3a() {
     let (done1_tx, done1_rx) = oneshot::channel::<&'static str>();
 
     cfg.begin("Test: no progress in minority (3A)");
-    cfg.net.spawn(future::lazy(move |_| {
-        ckp2a.put("1".to_owned(), "15".to_owned());
+    cfg.net.spawn(async move {
+        ckp2a.put_async("1".to_owned(), "15".to_owned()).await;
         done0_tx
             .send("put")
             .map_err(|e| {
                 warn!("done0 send failed: {:?}", e);
             })
             .unwrap();
-    }));
+    });
     let done0_rx = done0_rx.map(|op| {
         cfg.op();
         op
     });
 
-    cfg.net.spawn(future::lazy(move |_| {
+    cfg.net.spawn(async move {
         // different clerk in p2
-        ckp2b.get("1".to_owned());
+        ckp2b.get_async("1".to_owned()).await;
         done1_tx
             .send("get")
             .map_err(|e| {
                 warn!("done0 send failed: {:?}", e);
             })
             .unwrap();
-    }));
+    });
     let done1_rx = done1_rx.map(|op| {
         cfg.op();
         op
