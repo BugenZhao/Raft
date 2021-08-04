@@ -1022,32 +1022,43 @@ impl Node {
 #[async_trait::async_trait]
 impl RaftService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
-    // bugen: sorry for my `Mutex::lock`ing :(
 
     /// RPC service handler for `RequestVote`.
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
-        let mut raft = self.raft.write().unwrap();
-        rlog!(raft, "rpc -> {:?}", args);
-        let result = raft.handle_request_vote_request(args);
-        rlog!(raft, "rpc <- {:?}", result);
-        result
+        let raft = Arc::clone(&self.raft);
+        self.executor
+            .spawn_with_handle(async move {
+                let mut raft = raft.write().unwrap();
+                rlog!(raft, "rpc -> {:?}", args);
+                let result = raft.handle_request_vote_request(args);
+                rlog!(raft, "rpc <- {:?}", result);
+                result
+            })
+            .unwrap()
+            .await
     }
 
     /// RPC service handler for `AppendEntries`.
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
-        let mut raft = self.raft.write().unwrap();
-        let is_hb = args.entries.is_empty();
-        if is_hb {
-            rlog!(raft, "rpc -> <heart beat>");
-        } else {
-            rlog!(raft, "rpc -> {:?}", args);
-        }
-        let result = raft.handle_append_entries_request(args);
-        if !is_hb {
-            rlog!(raft, "rpc <- {:?}", result);
-        }
-        result
+        let raft = Arc::clone(&self.raft);
+        self.executor
+            .spawn_with_handle(async move {
+                let mut raft = raft.write().unwrap();
+                let is_hb = args.entries.is_empty();
+                if is_hb {
+                    rlog!(raft, "rpc -> <heart beat>");
+                } else {
+                    rlog!(raft, "rpc -> {:?}", args);
+                }
+                let result = raft.handle_append_entries_request(args);
+                if !is_hb {
+                    rlog!(raft, "rpc <- {:?}", result);
+                }
+                result
+            })
+            .unwrap()
+            .await
     }
 
     /// RPC service handler for `InstallSnapshot`.
@@ -1055,10 +1066,16 @@ impl RaftService for Node {
         &self,
         args: InstallSnapshotArgs,
     ) -> labrpc::Result<InstallSnapshotReply> {
-        let mut raft = self.raft.write().unwrap();
-        rlog!(raft, "rpc -> {:?}", args);
-        let result = raft.handle_install_snapshot_request(args);
-        rlog!(raft, "rpc <- {:?}", result);
-        result
+        let raft = Arc::clone(&self.raft);
+        self.executor
+            .spawn_with_handle(async move {
+                let mut raft = raft.write().unwrap();
+                rlog!(raft, "rpc -> {:?}", args);
+                let result = raft.handle_install_snapshot_request(args);
+                rlog!(raft, "rpc <- {:?}", result);
+                result
+            })
+            .unwrap()
+            .await
     }
 }

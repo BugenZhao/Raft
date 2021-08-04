@@ -113,7 +113,9 @@ impl KvServer {
     fn apply(&mut self, msg: ApplyMsg) {
         match msg {
             ApplyMsg::Command { index: _, command } => {
-                let Command { id, value } = labcodec::decode(&command).unwrap();
+                let command = labcodec::decode(&command).unwrap();
+                kvlog!(self, "apply command: {:?}", command);
+                let Command { id, value } = command;
                 let op_value = value.unwrap();
                 let state = self
                     .notifiers
@@ -146,7 +148,12 @@ impl KvServer {
                             }
                         };
                         if let Some(notifier) = notifier.take() {
-                            let _ = notifier.send(reply);
+                            match notifier.send(reply) {
+                                Ok(_) => kvlog!(self, "send notification"),
+                                Err(_) => {
+                                    kvlog!(level: error, self, "send notification error")
+                                }
+                            }
                         }
                         // mark as applied
                         *state = ApplyState::Applied;
@@ -234,36 +241,50 @@ impl KvService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
     async fn get(&self, req: GetRequest) -> labrpc::Result<GetReply> {
         // Your code here.
-        let mut reply = GetReply::default();
-        let start_result = self.kv.write().unwrap().start_get(req);
 
-        match start_result {
-            Ok(notifier) => match notifier.await {
-                Ok(r) => reply.value = r.value(),
-                Err(e) => reply.err = e.to_string(),
-            },
-            Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
-            Err(e) => reply.err = e.to_string(),
-        }
+        let kv = Arc::clone(&self.kv);
+        self.executor
+            .spawn_with_handle(async move {
+                let mut reply = GetReply::default();
+                let start_result = kv.write().unwrap().start_get(req);
 
-        Ok(reply)
+                match start_result {
+                    Ok(notifier) => match notifier.await {
+                        Ok(r) => reply.value = r.value(),
+                        Err(e) => reply.err = e.to_string(),
+                    },
+                    Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
+                    Err(e) => reply.err = e.to_string(),
+                }
+
+                Ok(reply)
+            })
+            .unwrap()
+            .await
     }
 
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
     async fn put_append(&self, req: PutAppendRequest) -> labrpc::Result<PutAppendReply> {
         // Your code here.
-        let mut reply = PutAppendReply::default();
-        let start_result = self.kv.write().unwrap().start_put_append(req);
 
-        match start_result {
-            Ok(notifier) => match notifier.await {
-                Ok(_r) => {}
-                Err(e) => reply.err = e.to_string(),
-            },
-            Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
-            Err(e) => reply.err = e.to_string(),
-        }
+        let kv = Arc::clone(&self.kv);
+        self.executor
+            .spawn_with_handle(async move {
+                let mut reply = PutAppendReply::default();
+                let start_result = kv.write().unwrap().start_put_append(req);
 
-        Ok(reply)
+                match start_result {
+                    Ok(notifier) => match notifier.await {
+                        Ok(_r) => {}
+                        Err(e) => reply.err = e.to_string(),
+                    },
+                    Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
+                    Err(e) => reply.err = e.to_string(),
+                }
+
+                Ok(reply)
+            })
+            .unwrap()
+            .await
     }
 }
