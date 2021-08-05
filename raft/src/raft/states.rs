@@ -2,8 +2,11 @@ use crate::proto::raftpb::*;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashSet, VecDeque},
-    fmt::Display,
+    fmt::{self, Display},
+    ops,
 };
+
+use super::persister::Persister;
 
 /// State of a raft peer (for testing).
 #[derive(Default, Clone, Debug)]
@@ -49,7 +52,7 @@ impl Display for RoleState {
 }
 
 /// Represents the log of a Raft peer, with snapshot support.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct Log {
     /// In memory log entries.
     inner: VecDeque<Entry>,
@@ -170,8 +173,16 @@ impl Log {
     }
 }
 
+impl fmt::Debug for Log {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Log")
+            .field("last_index", &self.last_index())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Persistent state of a raft peer.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct PersistentState {
     pub current_term: u64,
     pub voted_for: Option<u64>,
@@ -179,12 +190,61 @@ pub struct PersistentState {
 }
 
 impl PersistentState {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             current_term: 0,
             voted_for: None,
             log: Log::new(),
         }
+    }
+}
+
+pub struct PersistentStateWrapper {
+    state: PersistentState,
+    /// Object to serialize and deserialize this peer's persisted state.
+    pub persister: Box<dyn Persister>,
+}
+
+impl PersistentStateWrapper {
+    /// restore previously persisted state.
+    pub fn from(persister: Box<dyn Persister>) -> Self {
+        let data = persister.raft_state();
+        let state = bincode::deserialize(&data).unwrap_or_else(|_| PersistentState::new());
+        Self { state, persister }
+    }
+
+    pub fn read(&self) -> &PersistentState {
+        &self.state
+    }
+
+    pub fn write<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut PersistentState) -> R,
+    {
+        let r = f(&mut self.state);
+        self.persist(None);
+        r
+    }
+
+    /// save Raft's persistent state to stable storage,
+    /// where it can later be retrieved after a crash and restart.
+    pub fn persist(&self, snapshot: Option<Vec<u8>>) {
+        // Your code here (2C).
+        let p = bincode::serialize(&self.state).unwrap();
+
+        if let Some(ss) = snapshot {
+            self.persister.save_state_and_snapshot(p, ss);
+        } else {
+            self.persister.save_raft_state(p);
+        }
+    }
+}
+
+impl ops::Deref for PersistentStateWrapper {
+    type Target = PersistentState;
+
+    fn deref(&self) -> &Self::Target {
+        self.read()
     }
 }
 
@@ -196,6 +256,7 @@ pub struct VolatileState {
 }
 
 impl VolatileState {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             commit_index: 0,

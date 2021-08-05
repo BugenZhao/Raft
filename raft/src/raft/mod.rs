@@ -54,7 +54,6 @@ pub enum Event {
         new_next_index: usize,
         is_heart_beat: bool, // logging purpose only
     },
-    ForcePersist,
     InstallSnapshotReply {
         from: usize,
         reply: RpcResult<InstallSnapshotReply>,
@@ -72,8 +71,6 @@ pub enum TimerAction {
 pub struct Raft {
     /// RPC end points of all peers.
     peers: Vec<RaftClient>,
-    /// Object to serialize and deserialize this peer's persisted state.
-    persister: Box<dyn Persister>,
     /// This peer's index into peers[].
     me: usize,
 
@@ -85,7 +82,7 @@ pub struct Raft {
     /// Role of this peer with its specific states.
     role: RoleState,
     /// Persistent state: `current_form`, `voted_for`, `log`.
-    p: PersistentState,
+    p: PersistentStateWrapper,
     /// Volatile state: `commit_index`, `last_applied`.
     v: VolatileState,
 
@@ -127,24 +124,31 @@ impl Raft {
         apply_tx: UnboundedSender<ApplyMsg>,
     ) -> Raft {
         // Your initialization code here (2A, 2B, 2C).
+
+        let p = PersistentStateWrapper::from(persister);
+        let v = VolatileState {
+            commit_index: p.log.snapshot_last_included_index(),
+            last_applied: p.log.snapshot_last_included_index(),
+        };
+
         let mut rf = Raft {
             peers,
-            persister,
             me,
             role: RoleState::Follower,
-            p: PersistentState::new(),
-            v: VolatileState::new(),
+            p,
+            v,
             event_loop_tx: None,
             timer_action_tx: None,
             apply_tx,
             executor: SHARED_EXECUTOR.clone(),
         };
-
-        // may initialize from state persisted before a crash
-        let raft_state = rf.persister.raft_state();
-        rf.restore(&raft_state);
-
         rf.turn_follower();
+        rlog!(
+            rf,
+            "start: volatile: {:?};  persist: {:?}",
+            rf.v,
+            rf.p.read()
+        );
         rf
     }
 
@@ -153,24 +157,7 @@ impl Raft {
     /// see paper's Figure 2 for a description of what should be persistent.
     fn persist(&self, snapshot: Option<Vec<u8>>) {
         // Your code here (2C).
-        let p = bincode::serialize(&self.p).unwrap();
-
-        if let Some(ss) = snapshot {
-            self.persister.save_state_and_snapshot(p, ss);
-        } else {
-            self.persister.save_raft_state(p);
-        }
-    }
-
-    /// restore previously persisted state.
-    fn restore(&mut self, p: &[u8]) {
-        // Your code here (2C).
-        if let Ok(p) = bincode::deserialize(p) {
-            rlog!(self, "restored raft state");
-            self.p = p;
-            self.v.commit_index = self.p.log.snapshot_last_included_index();
-            self.v.last_applied = self.v.commit_index;
-        }
+        self.p.persist(snapshot)
     }
 
     /// The service using Raft (e.g. a k/v server) wants to start
@@ -190,7 +177,15 @@ impl Raft {
                     data,
                 };
 
-                self.p.log.push(entry); // will sync on next heartbeat
+                rlog!(
+                    level: debug,
+                    self,
+                    "start entry at index {}: {:?}",
+                    self.p.log.next_index(),
+                    entry
+                );
+
+                self.p.write(|p| p.log.push(entry)); // will sync on next heartbeat
 
                 Ok((self.p.log.last_index() as u64, self.p.log.last_term()))
             }
@@ -256,7 +251,7 @@ impl Raft {
             leader_id: self.me as u64,
             last_included_index: self.p.log.snapshot_last_included_index() as u64,
             last_included_term: self.p.log.snapshot_last_included_term(),
-            data: self.persister.snapshot(),
+            data: self.p.persister.snapshot(),
         }
     }
 }
@@ -271,8 +266,10 @@ impl Raft {
             Ordering::Equal => {}
             Ordering::Greater => {
                 rlog!(self, "update term to {}", term);
-                self.p.current_term = term;
-                self.p.voted_for = None;
+                self.p.write(|p| {
+                    p.current_term = term;
+                    p.voted_for = None;
+                })
             }
         }
     }
@@ -387,6 +384,7 @@ impl Raft {
                 index: i as u64,
                 command: self.p.log.data_at(i).unwrap().clone(),
             };
+            rlog!(level: debug, self, "will apply {:?}", msg);
             self.apply_tx.unbounded_send(msg).unwrap();
         }
 
@@ -472,7 +470,10 @@ impl Raft {
             from_peer,
             included_index,
         );
-        if self.p.log.compact_to(included_index, included_term) {
+        let success = self
+            .p
+            .write(|p| p.log.compact_to(included_index, included_term));
+        if success {
             if included_index >= self.v.commit_index {
                 self.v.commit_index = included_index;
                 self.v.last_applied = included_index;
@@ -513,7 +514,6 @@ impl Raft {
                 new_next_index,
                 is_heart_beat: _,
             } => self.handle_append_entries_reply(from, reply, new_next_index),
-            Event::ForcePersist => self.persist(None),
             Event::InstallSnapshotReply {
                 from,
                 reply,
@@ -529,7 +529,8 @@ impl Raft {
                 // start new election
                 self.turn_candidate();
                 self.update_term(self.p.current_term + 1);
-                self.p.voted_for = Some(self.me as u64);
+                let me = self.me as u64;
+                self.p.write(|p| p.voted_for = Some(me));
                 self.start_new_election();
             }
             _ => {} // no timeout for leader
@@ -545,7 +546,6 @@ impl Raft {
             }
             _ => {} // no heart beat for non-leader
         }
-        self.persist(None); // persist data on heart beat
     }
 
     /// RPC request for `RequestVote`.
@@ -579,7 +579,7 @@ impl Raft {
         };
 
         if vote_for.is_some() {
-            self.p.voted_for = vote_for;
+            self.p.write(|p| p.voted_for = vote_for);
             self.reset_timeout(); // reset election timeout on voting
         }
 
@@ -673,13 +673,17 @@ impl Raft {
                                     rlog!(level: warn, self, "outdated append entries request");
                                 }
                             } else {
-                                while self.p.log.next_index() > args.prev_log_index as usize + 1 {
-                                    let _ = self.p.log.pop_back().expect("entry must exist");
+                                let entries = args.entries;
+                                if !entries.is_empty() {
+                                    rlog!(self, "overwrite {} entries", entries.len());
                                 }
-                                if !args.entries.is_empty() {
-                                    rlog!(self, "overwrite {} entries", args.entries.len());
-                                }
-                                args.entries.into_iter().for_each(|e| self.p.log.push(e));
+                                let prev_log_index = args.prev_log_index;
+                                self.p.write(|p| {
+                                    while p.log.next_index() > prev_log_index as usize + 1 {
+                                        let _ = p.log.pop_back().expect("entry must exist");
+                                    }
+                                    entries.into_iter().for_each(|e| p.log.push(e));
+                                });
                             }
 
                             if args.leader_commit_index as usize > self.v.commit_index {
@@ -878,9 +882,8 @@ impl Node {
                             raft.write().unwrap().handle_event(event);
                         }
                         _ = shutdown_rx => {
-                            let mut raft = raft.write().unwrap();
-                            rlog!(level: warn, raft, "being killed");
-                            raft.handle_event(Event::ForcePersist); // trigger persist mannualy
+                            let raft = raft.read().unwrap();
+                            rlog!(level: warn, raft, "being killed: volatile: {:?};  persist: {:?}", raft.v, raft.p.read());
                             break; // will cause event_loop_rx to be dropped
                         }
                     }
