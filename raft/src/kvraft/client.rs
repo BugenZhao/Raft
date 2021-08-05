@@ -18,6 +18,16 @@ enum Op {
     Append(String, String),
 }
 
+/// Macro for logging message combined with state of the Raft peer.
+macro_rules! clog {
+    (level: $level:ident, $cl:expr, $($arg:tt)+) => {
+        ::log::$level!("CL [{}] {}", $cl.name, format_args!($($arg)+))
+    };
+    ($cl:expr, $($arg:tt)+) => {
+        clog!(level: info, $cl, $($arg)+)
+    };
+}
+
 pub struct Clerk {
     pub name: String,
     pub servers: Vec<KvClient>,
@@ -49,10 +59,11 @@ impl Clerk {
             .skip(self.last_leader.load(Ordering::Relaxed))
     }
 
-    async fn call<Req, F, Rep, V>(&self, build_request: Req) -> V
+    async fn call<Req, A, BR, Rep, V>(&self, args: A, build_request: Req) -> V
     where
-        Req: Fn(&KvClient) -> F,
-        F: Future<Output = labrpc::Result<Rep>> + Unpin,
+        A: std::fmt::Debug,
+        Req: Fn(&KvClient, &A) -> BR,
+        BR: Future<Output = labrpc::Result<Rep>> + Unpin,
         Rep: Reply<Value = V>,
     {
         let mut iter = self.cycle_servers();
@@ -60,7 +71,8 @@ impl Clerk {
         'outer: loop {
             let (i, server) = iter.next().unwrap();
             'retry: loop {
-                let request = build_request(server);
+                clog!(self, "request to #{}: {:?}", i, args);
+                let request = build_request(server, &args);
                 let timeout = futures_timer::Delay::new(Duration::from_millis(1000));
                 match select(request, timeout).await {
                     Either::Left((Ok(reply), _)) => {
@@ -69,7 +81,7 @@ impl Clerk {
                         } else {
                             self.last_leader.store(i, Ordering::Relaxed);
                             if !reply.error().is_empty() {
-                                error!("{}", reply.error());
+                                clog!(level: warn, self, "{}, retry", reply.error());
                                 continue 'retry;
                             } else {
                                 break 'outer reply.take_value();
@@ -77,11 +89,11 @@ impl Clerk {
                         }
                     }
                     Either::Left((Err(e), _)) => {
-                        error!("{}", e.to_string());
+                        clog!(level: warn, self, "{}, try next server", e);
                         continue 'outer;
                     }
                     Either::Right((_, _)) => {
-                        error!("timeout");
+                        clog!(level: warn, self, "timeout");
                         continue 'outer;
                     }
                 }
@@ -94,7 +106,7 @@ impl Clerk {
             id: Uuid::new_v4().to_string(),
             key,
         };
-        self.call(|s| s.get(&args)).await
+        self.call(args, |s, args| s.get(args)).await
     }
 
     /// fetch the current value for a key.
@@ -128,7 +140,7 @@ impl Clerk {
                 op: kvraftpb::Op::Append as i32,
             },
         };
-        self.call(|s| s.put_append(&args)).await
+        self.call(args, |s, args| s.put_append(args)).await
     }
 
     pub async fn put_async(&self, key: String, value: String) {

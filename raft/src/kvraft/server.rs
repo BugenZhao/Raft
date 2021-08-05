@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::mem;
 use std::sync::{Arc, RwLock};
 
 use futures::channel::mpsc::{unbounded, UnboundedReceiver};
@@ -12,7 +11,6 @@ use crate::proto::kvraftpb::*;
 use crate::raft::{self, ApplyMsg};
 use crate::Executor;
 
-#[macro_export]
 /// Macro for logging message combined with state of the Raft peer.
 macro_rules! kvlog {
     (level: $level:ident, $kv:expr, $($arg:tt)+) => {{
@@ -24,11 +22,10 @@ macro_rules! kvlog {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum NotifyReply {
     Get { value: String },
-    Put,
-    Append,
+    PutAppend,
 }
 
 impl NotifyReply {
@@ -42,7 +39,7 @@ impl NotifyReply {
 
 enum ApplyState {
     Applied,
-    ToApply(Option<oneshot::Sender<NotifyReply>>),
+    ToApply(Vec<oneshot::Sender<NotifyReply>>),
 }
 
 pub struct KvServer {
@@ -53,7 +50,7 @@ pub struct KvServer {
     max_raft_state: Option<usize>,
     // Your definitions here.
     store: HashMap<String, String>,
-    notifiers: HashMap<String, ApplyState>,
+    states: HashMap<String, ApplyState>,
 }
 
 impl KvServer {
@@ -74,7 +71,7 @@ impl KvServer {
             me,
             max_raft_state,
             store: HashMap::new(),
-            notifiers: HashMap::new(),
+            states: HashMap::new(),
         };
         (kv, apply_rx)
     }
@@ -82,18 +79,38 @@ impl KvServer {
 
 impl KvServer {
     fn start(&mut self, command: Command) -> Result<oneshot::Receiver<NotifyReply>> {
-        self.raft.start(&command).map_err(Error::Raft)?;
-
-        let id = command.id;
         let (tx, rx) = oneshot::channel();
-        self.notifiers.insert(id, ApplyState::ToApply(Some(tx)));
+
+        match self.states.entry(command.id.clone()) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
+                ApplyState::Applied => {
+                    kvlog!(level: warn, self, "dry-run applied command: {:?}", command);
+                    let reply = match command.value.unwrap() {
+                        command::Value::PutAppend(_) => NotifyReply::PutAppend,
+                        command::Value::Get(req) => {
+                            let value = self.store.get(&req.key).cloned().unwrap_or_default();
+                            NotifyReply::Get { value }
+                        }
+                    };
+                    let _ = tx.send(reply);
+                }
+                ApplyState::ToApply(notifiers) => {
+                    self.raft.start(&command).map_err(Error::Raft)?;
+                    notifiers.push(tx);
+                }
+            },
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                self.raft.start(&command).map_err(Error::Raft)?;
+                entry.insert(ApplyState::ToApply(vec![tx]));
+            }
+        }
 
         Ok(rx)
     }
 
-    fn start_get(&mut self, mut req: GetRequest) -> Result<oneshot::Receiver<NotifyReply>> {
+    fn start_get(&mut self, req: GetRequest) -> Result<oneshot::Receiver<NotifyReply>> {
         let command = Command {
-            id: mem::take(&mut req.id),
+            id: req.id.clone(),
             value: Some(command::Value::Get(req)),
         };
         self.start(command)
@@ -101,10 +118,10 @@ impl KvServer {
 
     fn start_put_append(
         &mut self,
-        mut req: PutAppendRequest,
+        req: PutAppendRequest,
     ) -> Result<oneshot::Receiver<NotifyReply>> {
         let command = Command {
-            id: mem::take(&mut req.id),
+            id: req.id.clone(),
             value: Some(command::Value::PutAppend(req)),
         };
         self.start(command)
@@ -118,26 +135,30 @@ impl KvServer {
                 let Command { id, value } = command;
                 let op_value = value.unwrap();
                 let state = self
-                    .notifiers
+                    .states
                     .entry(id)
-                    .or_insert(ApplyState::ToApply(None));
+                    .or_insert_with(|| ApplyState::ToApply(vec![]));
 
                 match state {
-                    ApplyState::Applied => {
-                        kvlog!(level: warn, self, "ignore applied command");
-                    }
-                    ApplyState::ToApply(notifier) => {
+                    ApplyState::Applied => {}
+                    ApplyState::ToApply(notifiers) => {
                         let reply = match op_value {
                             command::Value::PutAppend(req) => match req.op() {
                                 Op::Put => {
                                     kvlog!(self, "Put: {:?}", req);
                                     self.store.insert(req.key, req.value);
-                                    NotifyReply::Put
+                                    NotifyReply::PutAppend
                                 }
                                 Op::Append => {
-                                    kvlog!(self, "Append: {:?}", req);
-                                    self.store.entry(req.key).or_default().push_str(&req.value);
-                                    NotifyReply::Append
+                                    // kvlog!(self, "Append: {:?}", req);
+                                    self.store
+                                        .entry(req.key.clone())
+                                        .or_default()
+                                        .push_str(&req.value);
+                                    let value =
+                                        self.store.get(&req.key).cloned().unwrap_or_default();
+                                    kvlog!(self, "After Append: {:?} => {:?}", req, value);
+                                    NotifyReply::PutAppend
                                 }
                                 _ => unreachable!(),
                             },
@@ -147,12 +168,18 @@ impl KvServer {
                                 NotifyReply::Get { value }
                             }
                         };
-                        if let Some(notifier) = notifier.take() {
-                            match notifier.send(reply) {
-                                Ok(_) => kvlog!(self, "send notification"),
-                                Err(_) => {
-                                    kvlog!(level: error, self, "send notification error")
+
+                        for notifier in notifiers.drain(..) {
+                            if self.raft.is_leader() {
+                                match notifier.send(reply.clone()) {
+                                    Ok(_) => kvlog!(self, "send notification"),
+                                    Err(_) => {
+                                        kvlog!(level: error, self, "send notification error")
+                                    }
                                 }
+                            } else {
+                                kvlog!(level: warn, self, "not a leader anymore");
+                                drop(notifier); // wrong leader, cancelled
                             }
                         }
                         // mark as applied
@@ -251,7 +278,10 @@ impl KvService for Node {
                 match start_result {
                     Ok(notifier) => match notifier.await {
                         Ok(r) => reply.value = r.value(),
-                        Err(e) => reply.err = e.to_string(),
+                        Err(e) => {
+                            reply.wrong_leader = true;
+                            reply.err = e.to_string();
+                        }
                     },
                     Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
                     Err(e) => reply.err = e.to_string(),
@@ -276,7 +306,10 @@ impl KvService for Node {
                 match start_result {
                     Ok(notifier) => match notifier.await {
                         Ok(_r) => {}
-                        Err(e) => reply.err = e.to_string(),
+                        Err(e) => {
+                            reply.wrong_leader = true;
+                            reply.err = e.to_string();
+                        }
                     },
                     Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
                     Err(e) => reply.err = e.to_string(),
