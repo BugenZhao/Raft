@@ -20,50 +20,10 @@ pub mod kvraftpb {
 
     labrpc::service! {
         service kv {
-            rpc get(GetRequest) returns (GetReply);
-            rpc put_append(PutAppendRequest) returns (PutAppendReply);
+            rpc op(KvRequest) returns (KvReply);
 
             // Your code here if more rpc desired.
-            // rpc xxx(yyy) returns (zzz)
         }
     }
     pub use self::kv::{add_service as add_kv_service, Client as KvClient, Service as KvService};
-
-    pub trait Reply {
-        type Value;
-
-        fn wrong_leader(&self) -> bool;
-        fn error(&self) -> &str;
-        fn take_value(self) -> Self::Value;
-    }
-
-    impl Reply for GetReply {
-        type Value = String;
-
-        fn wrong_leader(&self) -> bool {
-            self.wrong_leader
-        }
-
-        fn error(&self) -> &str {
-            self.err.as_str()
-        }
-
-        fn take_value(self) -> Self::Value {
-            self.value
-        }
-    }
-
-    impl Reply for PutAppendReply {
-        type Value = ();
-
-        fn wrong_leader(&self) -> bool {
-            self.wrong_leader
-        }
-
-        fn error(&self) -> &str {
-            self.err.as_str()
-        }
-
-        fn take_value(self) -> Self::Value {}
-    }
 }

@@ -1,7 +1,6 @@
 use std::{
     fmt,
-    future::Future,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -13,18 +12,13 @@ use uuid::Uuid;
 
 use crate::proto::kvraftpb::{self, *};
 
-enum Op {
-    Put(String, String),
-    Append(String, String),
-}
-
 /// Macro for logging message combined with state of the Raft peer.
 macro_rules! clog {
-    (level: $level:ident, $cl:expr, $($arg:tt)+) => {
-        ::log::$level!("CL [{}] {}", $cl.name, format_args!($($arg)+))
+    (level: $level:ident, $cl:expr, $args:expr, $($arg:tt)+) => {
+        ::log::$level!("CL [{}] {} [while {:?}]", $cl.name, format_args!($($arg)+), $args)
     };
-    ($cl:expr, $($arg:tt)+) => {
-        clog!(level: info, $cl, $($arg)+)
+    ($cl:expr, $args:expr, $($arg:tt)+) => {
+        clog!(level: info, $cl, $args, $($arg)+)
     };
 }
 
@@ -32,6 +26,8 @@ pub struct Clerk {
     pub name: String,
     pub servers: Vec<KvClient>,
     // You will have to modify this struct.
+    id: String,
+    next_seq: AtomicU64,
     last_leader: AtomicUsize,
 }
 
@@ -44,11 +40,19 @@ impl fmt::Debug for Clerk {
 impl Clerk {
     pub fn new(name: String, servers: Vec<KvClient>) -> Clerk {
         // You'll have to add code here.
+        let id = format!("{}-{:x}", name, Uuid::new_v4().as_u128());
+
         Clerk {
             name,
             servers,
+            id,
+            next_seq: 1.into(),
             last_leader: 0.into(),
         }
+    }
+
+    fn next_seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::SeqCst)
     }
 
     fn cycle_servers(&self) -> impl Iterator<Item = (usize, &KvClient)> {
@@ -59,41 +63,36 @@ impl Clerk {
             .skip(self.last_leader.load(Ordering::Relaxed))
     }
 
-    async fn call<Req, A, BR, Rep, V>(&self, args: A, build_request: Req) -> V
-    where
-        A: std::fmt::Debug,
-        Req: Fn(&KvClient, &A) -> BR,
-        BR: Future<Output = labrpc::Result<Rep>> + Unpin,
-        Rep: Reply<Value = V>,
-    {
+    async fn call(&self, args: KvRequest) -> String {
         let mut iter = self.cycle_servers();
 
         'outer: loop {
             let (i, server) = iter.next().unwrap();
+
             'retry: loop {
-                clog!(self, "request to #{}: {:?}", i, args);
-                let request = build_request(server, &args);
+                clog!(self, args, "request to #{}", i);
+                let request = server.op(&args);
                 let timeout = futures_timer::Delay::new(Duration::from_millis(1000));
                 match select(request, timeout).await {
                     Either::Left((Ok(reply), _)) => {
-                        if reply.wrong_leader() {
+                        if reply.wrong_leader {
                             continue 'outer;
                         } else {
                             self.last_leader.store(i, Ordering::Relaxed);
-                            if !reply.error().is_empty() {
-                                clog!(level: warn, self, "{}, retry", reply.error());
+                            if !reply.err.is_empty() {
+                                clog!(level: warn, self, args, "retry: {}", reply.err);
                                 continue 'retry;
                             } else {
-                                break 'outer reply.take_value();
+                                break 'outer reply.value;
                             }
                         }
                     }
                     Either::Left((Err(e), _)) => {
-                        clog!(level: warn, self, "{}, try next server", e);
+                        clog!(level: warn, self, args, "try next server: {}", e);
                         continue 'outer;
                     }
                     Either::Right((_, _)) => {
-                        clog!(level: warn, self, "timeout");
+                        clog!(level: warn, self, args, "timeout");
                         continue 'outer;
                     }
                 }
@@ -102,11 +101,14 @@ impl Clerk {
     }
 
     pub async fn get_async(&self, key: String) -> String {
-        let args = GetRequest {
-            id: Uuid::new_v4().to_string(),
+        let args = KvRequest {
             key,
+            op: kvraftpb::Op::Get as i32,
+            cid: self.id.clone(),
+            seq: self.next_seq(),
+            ..Default::default()
         };
-        self.call(args, |s, args| s.get(args)).await
+        self.call(args).await
     }
 
     /// fetch the current value for a key.
@@ -120,31 +122,15 @@ impl Clerk {
         block_on(self.get_async(key))
     }
 
-    /// shared by Put and Append.
-    //
-    // you can send an RPC with code like this:
-    // let reply = self.servers[i].put_append(args).unwrap();
-    async fn put_append_async(&self, op: Op) {
-        // You will have to modify this function.
-        let args = match op {
-            Op::Put(key, value) => PutAppendRequest {
-                id: Uuid::new_v4().to_string(),
-                key,
-                value,
-                op: kvraftpb::Op::Put as i32,
-            },
-            Op::Append(key, value) => PutAppendRequest {
-                id: Uuid::new_v4().to_string(),
-                key,
-                value,
-                op: kvraftpb::Op::Append as i32,
-            },
-        };
-        self.call(args, |s, args| s.put_append(args)).await
-    }
-
     pub async fn put_async(&self, key: String, value: String) {
-        self.put_append_async(Op::Put(key, value)).await
+        let args = KvRequest {
+            key,
+            value,
+            op: kvraftpb::Op::Put as i32,
+            cid: self.id.clone(),
+            seq: self.next_seq(),
+        };
+        self.call(args).await;
     }
 
     pub fn put(&self, key: String, value: String) {
@@ -152,7 +138,14 @@ impl Clerk {
     }
 
     pub async fn append_async(&self, key: String, value: String) {
-        self.put_append_async(Op::Append(key, value)).await
+        let args = KvRequest {
+            key,
+            value,
+            op: kvraftpb::Op::Append as i32,
+            cid: self.id.clone(),
+            seq: self.next_seq(),
+        };
+        self.call(args).await;
     }
 
     pub fn append(&self, key: String, value: String) {

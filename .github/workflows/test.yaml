@@ -2,7 +2,7 @@ on: [push, pull_request]
 name: Test
 
 jobs:
-  check:
+  test-2:
     name: Test 2
     runs-on: ubuntu-latest
     steps:
@@ -10,7 +10,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-      - name: Check and Test 2
+      - name: Check and Test
         env:
           RUST_TEST_THREADS: 8
           LOG_LEVEL: raft=error
@@ -20,3 +20,21 @@ jobs:
           max_attempts: 3
           retry_on: timeout
           command: make test_2
+  test-3a:
+    name: Test 3A
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Check and Test
+        env:
+          RUST_TEST_THREADS: 8
+          LOG_LEVEL: raft=error
+        uses: nick-invision/retry@v2
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_on: timeout
+          command: make test_3a

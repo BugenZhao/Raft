@@ -16,7 +16,7 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Error::Raft(e) => e.source(),
-            Error::NoLeader => None,
+            _ => None,
         }
     }
 }

@@ -28,18 +28,10 @@ enum NotifyReply {
     PutAppend,
 }
 
-impl NotifyReply {
-    fn value(self) -> String {
-        match self {
-            NotifyReply::Get { value } => value,
-            _ => panic!("called `NotifyReply::value` on a non-`Get` value"),
-        }
-    }
-}
-
-enum ApplyState {
-    Applied,
-    ToApply(Vec<oneshot::Sender<NotifyReply>>),
+type Command = KvRequest;
+struct Notifier {
+    term: u64,
+    sender: oneshot::Sender<NotifyReply>,
 }
 
 pub struct KvServer {
@@ -50,7 +42,8 @@ pub struct KvServer {
     max_raft_state: Option<usize>,
     // Your definitions here.
     store: HashMap<String, String>,
-    states: HashMap<String, ApplyState>,
+    notifiers: HashMap<u64, Notifier>,
+    max_seqs: HashMap<String, u64>,
 }
 
 impl KvServer {
@@ -71,7 +64,8 @@ impl KvServer {
             me,
             max_raft_state,
             store: HashMap::new(),
-            states: HashMap::new(),
+            notifiers: HashMap::new(),
+            max_seqs: HashMap::new(),
         };
         (kv, apply_rx)
     }
@@ -80,110 +74,71 @@ impl KvServer {
 impl KvServer {
     fn start(&mut self, command: Command) -> Result<oneshot::Receiver<NotifyReply>> {
         let (tx, rx) = oneshot::channel();
+        let (index, term) = self.raft.start(&command).map_err(Error::Raft)?;
 
-        match self.states.entry(command.id.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
-                ApplyState::Applied => {
-                    kvlog!(level: warn, self, "dry-run applied command: {:?}", command);
-                    let reply = match command.value.unwrap() {
-                        command::Value::PutAppend(_) => NotifyReply::PutAppend,
-                        command::Value::Get(req) => {
-                            let value = self.store.get(&req.key).cloned().unwrap_or_default();
-                            NotifyReply::Get { value }
-                        }
-                    };
-                    let _ = tx.send(reply);
-                }
-                ApplyState::ToApply(notifiers) => {
-                    self.raft.start(&command).map_err(Error::Raft)?;
-                    notifiers.push(tx);
-                }
-            },
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                self.raft.start(&command).map_err(Error::Raft)?;
-                entry.insert(ApplyState::ToApply(vec![tx]));
-            }
-        }
+        let new = self
+            .notifiers
+            .insert(index, Notifier { term, sender: tx })
+            .is_none();
+        assert!(new);
 
         Ok(rx)
     }
 
-    fn start_get(&mut self, req: GetRequest) -> Result<oneshot::Receiver<NotifyReply>> {
-        let command = Command {
-            id: req.id.clone(),
-            value: Some(command::Value::Get(req)),
-        };
-        self.start(command)
-    }
-
-    fn start_put_append(
-        &mut self,
-        req: PutAppendRequest,
-    ) -> Result<oneshot::Receiver<NotifyReply>> {
-        let command = Command {
-            id: req.id.clone(),
-            value: Some(command::Value::PutAppend(req)),
-        };
-        self.start(command)
-    }
-
     fn apply(&mut self, msg: ApplyMsg) {
         match msg {
-            ApplyMsg::Command { index: _, command } => {
-                let command = labcodec::decode(&command).unwrap();
-                kvlog!(self, "apply command: {:?}", command);
-                let Command { id, value } = command;
-                let op_value = value.unwrap();
-                let state = self
-                    .states
-                    .entry(id)
-                    .or_insert_with(|| ApplyState::ToApply(vec![]));
+            ApplyMsg::Command { index, command } => {
+                let req: KvRequest = labcodec::decode(&command).unwrap();
+                kvlog!(self, "apply command: {:?}", req);
 
-                match state {
-                    ApplyState::Applied => {}
-                    ApplyState::ToApply(notifiers) => {
-                        let reply = match op_value {
-                            command::Value::PutAppend(req) => match req.op() {
-                                Op::Put => {
-                                    kvlog!(self, "Put: {:?}", req);
-                                    self.store.insert(req.key, req.value);
-                                    NotifyReply::PutAppend
-                                }
-                                Op::Append => {
-                                    // kvlog!(self, "Append: {:?}", req);
-                                    self.store
-                                        .entry(req.key.clone())
-                                        .or_default()
-                                        .push_str(&req.value);
-                                    let value =
-                                        self.store.get(&req.key).cloned().unwrap_or_default();
-                                    kvlog!(self, "After Append: {:?} => {:?}", req, value);
-                                    NotifyReply::PutAppend
-                                }
-                                _ => unreachable!(),
-                            },
-                            command::Value::Get(req) => {
-                                let value = self.store.get(&req.key).cloned().unwrap_or_default();
-                                kvlog!(self, "Get: {:?} => {:?}", req, value);
-                                NotifyReply::Get { value }
-                            }
-                        };
+                let to_apply = {
+                    let max_seq = self.max_seqs.entry(req.cid.clone()).or_default();
+                    if req.seq > *max_seq {
+                        // only apply new requests
+                        *max_seq = req.seq;
+                        true
+                    } else {
+                        false
+                    }
+                };
 
-                        for notifier in notifiers.drain(..) {
-                            if self.raft.is_leader() {
-                                match notifier.send(reply.clone()) {
-                                    Ok(_) => kvlog!(self, "send notification"),
-                                    Err(_) => {
-                                        kvlog!(level: error, self, "send notification error")
-                                    }
-                                }
-                            } else {
-                                kvlog!(level: warn, self, "not a leader anymore");
-                                drop(notifier); // wrong leader, cancelled
+                let reply = match req.op() {
+                    Op::Put => {
+                        if to_apply {
+                            kvlog!(self, "Put: {:?}", req);
+                            self.store.insert(req.key, req.value);
+                        }
+                        NotifyReply::PutAppend
+                    }
+                    Op::Append => {
+                        if to_apply {
+                            self.store
+                                .entry(req.key.clone())
+                                .or_default()
+                                .push_str(&req.value);
+                            let value = self.store.get(&req.key).cloned().unwrap_or_default();
+                            kvlog!(self, "After Append: {:?} => {:?}", req, value);
+                        }
+                        NotifyReply::PutAppend
+                    }
+                    Op::Get => {
+                        let value = self.store.get(&req.key).cloned().unwrap_or_default();
+                        kvlog!(self, "Get: {:?} => {:?}", req, value);
+                        NotifyReply::Get { value }
+                    }
+                    Op::Unknown => unreachable!(),
+                };
+
+                if let Some(Notifier { term, sender }) = self.notifiers.remove(&index) {
+                    if self.raft.is_leader() && term == self.raft.term() {
+                        match sender.send(reply) {
+                            Ok(_) => kvlog!(self, "send notification"),
+                            Err(_) => {
+                                kvlog!(level: error, self, "send notification error")
                             }
                         }
-                        // mark as applied
-                        *state = ApplyState::Applied;
+                    } else {
+                        kvlog!(level: warn, self, "not THAT leader anymore");
                     }
                 }
             }
@@ -266,45 +221,16 @@ impl Node {
 #[async_trait::async_trait]
 impl KvService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
-    async fn get(&self, req: GetRequest) -> labrpc::Result<GetReply> {
-        // Your code here.
-
+    async fn op(&self, req: KvRequest) -> labrpc::Result<KvReply> {
         let kv = Arc::clone(&self.kv);
         self.executor
             .spawn_with_handle(async move {
-                let mut reply = GetReply::default();
-                let start_result = kv.write().unwrap().start_get(req);
+                let mut reply = KvReply::default();
+                let start_result = kv.write().unwrap().start(req);
 
                 match start_result {
                     Ok(notifier) => match notifier.await {
-                        Ok(r) => reply.value = r.value(),
-                        Err(e) => {
-                            reply.wrong_leader = true;
-                            reply.err = e.to_string();
-                        }
-                    },
-                    Err(Error::Raft(raft::errors::Error::NotLeader)) => reply.wrong_leader = true,
-                    Err(e) => reply.err = e.to_string(),
-                }
-
-                Ok(reply)
-            })
-            .unwrap()
-            .await
-    }
-
-    // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
-    async fn put_append(&self, req: PutAppendRequest) -> labrpc::Result<PutAppendReply> {
-        // Your code here.
-
-        let kv = Arc::clone(&self.kv);
-        self.executor
-            .spawn_with_handle(async move {
-                let mut reply = PutAppendReply::default();
-                let start_result = kv.write().unwrap().start_put_append(req);
-
-                match start_result {
-                    Ok(notifier) => match notifier.await {
+                        Ok(NotifyReply::Get { value }) => reply.value = value,
                         Ok(_r) => {}
                         Err(e) => {
                             reply.wrong_leader = true;
