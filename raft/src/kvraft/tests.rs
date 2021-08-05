@@ -547,7 +547,7 @@ fn generic_test_linearizability(
 
     if !check_operations_timeout(
         KvModel {},
-        Arc::try_unwrap(operations).unwrap().into_inner().unwrap(),
+        operations.lock().unwrap().clone(),
         LINEARIZABILITY_CHECK_TIMEOUT,
     ) {
         panic!("history is not linearizable");

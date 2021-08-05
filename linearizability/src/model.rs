@@ -28,8 +28,8 @@ impl<I: Debug, O: Debug> Value<I, O> {
     }
 }
 
-#[derive(Debug)]
-pub struct Operation<I: Debug, O: Debug> {
+#[derive(Debug, Clone)]
+pub struct Operation<I: Debug + Clone, O: Debug + Clone> {
     pub input: I,
     pub call: i64, // invocation time
     pub output: O,
@@ -52,8 +52,8 @@ pub type Events<I, O> = Vec<Event<Value<I, O>>>;
 
 pub trait Model: Clone + Send + 'static {
     type State: Clone + Display + PartialEq;
-    type Input: Send + Debug + 'static;
-    type Output: Send + Debug + 'static;
+    type Input: Send + Debug + Clone + 'static;
+    type Output: Send + Debug + Clone + 'static;
 
     // Partition functions, such that a history is linearizable if an only
     // if each partition is linearizable. If you don't want to implement

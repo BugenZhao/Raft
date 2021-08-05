@@ -27,7 +27,9 @@ struct Entry<T> {
     pub time: i64,
 }
 
-fn make_entries<I: Debug, O: Debug>(history: Operations<I, O>) -> Vec<Entry<Value<I, O>>> {
+fn make_entries<I: Debug + Clone, O: Debug + Clone>(
+    history: Operations<I, O>,
+) -> Vec<Entry<Value<I, O>>> {
     let mut entries = Vec::new();
     for (id, elem) in history.into_iter().enumerate() {
         entries.push(Entry {
