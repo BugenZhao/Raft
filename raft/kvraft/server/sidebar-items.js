@@ -1,1 +1,1 @@
-initSidebarItems({"enum":[["ApplyState",""],["NotifyReply",""]],"struct":[["KvServer",""],["Node",""]]});
+initSidebarItems({"enum":[["NotifyReply",""]],"struct":[["KvServer",""],["Node",""],["Notifier",""]],"type":[["Command",""]]});

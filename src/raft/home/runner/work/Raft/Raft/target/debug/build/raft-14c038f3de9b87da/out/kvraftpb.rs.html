@@ -29,69 +29,23 @@
 <span id="29">29</span>
 <span id="30">30</span>
 <span id="31">31</span>
-<span id="32">32</span>
-<span id="33">33</span>
-<span id="34">34</span>
-<span id="35">35</span>
-<span id="36">36</span>
-<span id="37">37</span>
-<span id="38">38</span>
-<span id="39">39</span>
-<span id="40">40</span>
-<span id="41">41</span>
-<span id="42">42</span>
-<span id="43">43</span>
-<span id="44">44</span>
-<span id="45">45</span>
-<span id="46">46</span>
-<span id="47">47</span>
-<span id="48">48</span>
-<span id="49">49</span>
-<span id="50">50</span>
-<span id="51">51</span>
-<span id="52">52</span>
-<span id="53">53</span>
-<span id="54">54</span>
-<span id="55">55</span>
-<span id="56">56</span>
-<span id="57">57</span>
-<span id="58">58</span>
-<span id="59">59</span>
-<span id="60">60</span>
-<span id="61">61</span>
-<span id="62">62</span>
 </pre><pre class="rust">
-<span class="comment">//// Put or Append</span>
 <span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">PartialEq</span>, <span class="ident">::prost::Message</span>)]</span>
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">PutAppendRequest</span> {
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">KvRequest</span> {
     <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;1&quot;</span>)]</span>
     <span class="kw">pub</span> <span class="ident">key</span>: <span class="ident">::prost::alloc::string::String</span>,
     <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;2&quot;</span>)]</span>
     <span class="kw">pub</span> <span class="ident">value</span>: <span class="ident">::prost::alloc::string::String</span>,
-    <span class="doccomment">/// &quot;Put&quot; or &quot;Append&quot;</span>
     <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">enumeration</span><span class="op">=</span><span class="string">&quot;Op&quot;</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;3&quot;</span>)]</span>
     <span class="kw">pub</span> <span class="ident">op</span>: <span class="ident">i32</span>,
     <span class="doccomment">/// You&#39;ll have to add definitions here.</span>
     <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;4&quot;</span>)]</span>
-    <span class="kw">pub</span> <span class="ident">id</span>: <span class="ident">::prost::alloc::string::String</span>,
+    <span class="kw">pub</span> <span class="ident">cid</span>: <span class="ident">::prost::alloc::string::String</span>,
+    <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">uint64</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;5&quot;</span>)]</span>
+    <span class="kw">pub</span> <span class="ident">seq</span>: <span class="ident">u64</span>,
 }
 <span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">PartialEq</span>, <span class="ident">::prost::Message</span>)]</span>
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">PutAppendReply</span> {
-    <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">bool</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;1&quot;</span>)]</span>
-    <span class="kw">pub</span> <span class="ident">wrong_leader</span>: <span class="ident">bool</span>,
-    <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;2&quot;</span>)]</span>
-    <span class="kw">pub</span> <span class="ident">err</span>: <span class="ident">::prost::alloc::string::String</span>,
-}
-<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">PartialEq</span>, <span class="ident">::prost::Message</span>)]</span>
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">GetRequest</span> {
-    <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;1&quot;</span>)]</span>
-    <span class="kw">pub</span> <span class="ident">key</span>: <span class="ident">::prost::alloc::string::String</span>,
-    <span class="doccomment">/// You&#39;ll have to add definitions here.</span>
-    <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;2&quot;</span>)]</span>
-    <span class="kw">pub</span> <span class="ident">id</span>: <span class="ident">::prost::alloc::string::String</span>,
-}
-<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">PartialEq</span>, <span class="ident">::prost::Message</span>)]</span>
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">GetReply</span> {
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">KvReply</span> {
     <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">bool</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;1&quot;</span>)]</span>
     <span class="kw">pub</span> <span class="ident">wrong_leader</span>: <span class="ident">bool</span>,
     <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;2&quot;</span>)]</span>
@@ -99,29 +53,13 @@
     <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;3&quot;</span>)]</span>
     <span class="kw">pub</span> <span class="ident">value</span>: <span class="ident">::prost::alloc::string::String</span>,
 }
-<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">PartialEq</span>, <span class="ident">::prost::Message</span>)]</span>
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Command</span> {
-    <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">string</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;1&quot;</span>)]</span>
-    <span class="kw">pub</span> <span class="ident">id</span>: <span class="ident">::prost::alloc::string::String</span>,
-    <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">oneof</span><span class="op">=</span><span class="string">&quot;command::Value&quot;</span>, <span class="ident">tags</span><span class="op">=</span><span class="string">&quot;2, 3&quot;</span>)]</span>
-    <span class="kw">pub</span> <span class="ident">value</span>: <span class="ident">::core::option::Option</span><span class="op">&lt;</span><span class="ident">command::Value</span><span class="op">&gt;</span>,
-}
-<span class="doccomment">/// Nested message and enum types in `Command`.</span>
-<span class="kw">pub</span> <span class="kw">mod</span> <span class="ident">command</span> {
-    <span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">PartialEq</span>, <span class="ident">::prost::Oneof</span>)]</span>
-    <span class="kw">pub</span> <span class="kw">enum</span> <span class="ident">Value</span> {
-        <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">message</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;2&quot;</span>)]</span>
-        <span class="ident">PutAppend</span>(<span class="kw">super</span><span class="ident">::PutAppendRequest</span>),
-        <span class="attribute">#[<span class="ident">prost</span>(<span class="ident">message</span>, <span class="ident">tag</span><span class="op">=</span><span class="string">&quot;3&quot;</span>)]</span>
-        <span class="ident">Get</span>(<span class="kw">super</span><span class="ident">::GetRequest</span>),
-    }
-}
 <span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Clone</span>, <span class="ident">Copy</span>, <span class="ident">Debug</span>, <span class="ident">PartialEq</span>, <span class="ident">Eq</span>, <span class="ident">Hash</span>, <span class="ident">PartialOrd</span>, <span class="ident">Ord</span>, <span class="ident">::prost::Enumeration</span>)]</span>
 <span class="attribute">#[<span class="ident">repr</span>(<span class="ident">i32</span>)]</span>
 <span class="kw">pub</span> <span class="kw">enum</span> <span class="ident">Op</span> {
     <span class="ident">Unknown</span> <span class="op">=</span> <span class="number">0</span>,
     <span class="ident">Put</span> <span class="op">=</span> <span class="number">1</span>,
     <span class="ident">Append</span> <span class="op">=</span> <span class="number">2</span>,
+    <span class="ident">Get</span> <span class="op">=</span> <span class="number">3</span>,
 }
 </pre></div>
 </section><section id="search" class="content hidden"></section><div id="rustdoc-vars" data-root-path="../../../../../../../../../../../../" data-current-crate="raft" data-search-index-js="../../../../../../../../../../../../search-index.js" data-search-js="../../../../../../../../../../../../search.js"></div>
