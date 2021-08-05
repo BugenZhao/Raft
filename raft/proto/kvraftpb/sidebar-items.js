@@ -1,1 +1,1 @@
-initSidebarItems({"enum":[["Op",""]],"mod":[["command","Nested message and enum types in `Command`."],["kv",""]],"struct":[["Command",""],["GetReply",""],["GetRequest",""],["PutAppendReply",""],["PutAppendRequest",""]]});
+initSidebarItems({"enum":[["Op",""]],"mod":[["command","Nested message and enum types in `Command`."],["kv",""]],"struct":[["Command",""],["GetReply",""],["GetRequest",""],["PutAppendReply",""],["PutAppendRequest",""]],"trait":[["Reply",""]]});

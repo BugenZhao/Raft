@@ -1075,10 +1075,6 @@
 <span id="1075">1075</span>
 <span id="1076">1076</span>
 <span id="1077">1077</span>
-<span id="1078">1078</span>
-<span id="1079">1079</span>
-<span id="1080">1080</span>
-<span id="1081">1081</span>
 </pre><pre class="rust">
 <span class="kw">use</span> <span class="ident">std::cmp::Ordering</span>;
 <span class="kw">use</span> <span class="ident">std::sync</span>::{<span class="ident">Arc</span>, <span class="ident">Mutex</span>, <span class="ident">RwLock</span>};
@@ -1136,7 +1132,6 @@
         <span class="ident">new_next_index</span>: <span class="ident">usize</span>,
         <span class="ident">is_heart_beat</span>: <span class="ident">bool</span>, <span class="comment">// logging purpose only</span>
     },
-    <span class="ident">ForcePersist</span>,
     <span class="ident">InstallSnapshotReply</span> {
         <span class="ident">from</span>: <span class="ident">usize</span>,
         <span class="ident">reply</span>: <span class="ident">RpcResult</span><span class="op">&lt;</span><span class="ident">InstallSnapshotReply</span><span class="op">&gt;</span>,
@@ -1154,8 +1149,6 @@
 <span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Raft</span> {
     <span class="doccomment">/// RPC end points of all peers.</span>
     <span class="ident">peers</span>: <span class="ident">Vec</span><span class="op">&lt;</span><span class="ident">RaftClient</span><span class="op">&gt;</span>,
-    <span class="doccomment">/// Object to serialize and deserialize this peer&#39;s persisted state.</span>
-    <span class="ident">persister</span>: <span class="ident">Box</span><span class="op">&lt;</span><span class="kw">dyn</span> <span class="ident">Persister</span><span class="op">&gt;</span>,
     <span class="doccomment">/// This peer&#39;s index into peers[].</span>
     <span class="ident">me</span>: <span class="ident">usize</span>,
 
@@ -1167,7 +1160,7 @@
     <span class="doccomment">/// Role of this peer with its specific states.</span>
     <span class="ident">role</span>: <span class="ident">RoleState</span>,
     <span class="doccomment">/// Persistent state: `current_form`, `voted_for`, `log`.</span>
-    <span class="ident">p</span>: <span class="ident">PersistentState</span>,
+    <span class="ident">p</span>: <span class="ident">PersistentStateWrapper</span>,
     <span class="doccomment">/// Volatile state: `commit_index`, `last_applied`.</span>
     <span class="ident">v</span>: <span class="ident">VolatileState</span>,
 
@@ -1209,24 +1202,31 @@
         <span class="ident">apply_tx</span>: <span class="ident">UnboundedSender</span><span class="op">&lt;</span><span class="ident">ApplyMsg</span><span class="op">&gt;</span>,
     ) <span class="op">-</span><span class="op">&gt;</span> <span class="ident">Raft</span> {
         <span class="comment">// Your initialization code here (2A, 2B, 2C).</span>
+
+        <span class="kw">let</span> <span class="ident">p</span> <span class="op">=</span> <span class="ident">PersistentStateWrapper::from</span>(<span class="ident">persister</span>);
+        <span class="kw">let</span> <span class="ident">v</span> <span class="op">=</span> <span class="ident">VolatileState</span> {
+            <span class="ident">commit_index</span>: <span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">snapshot_last_included_index</span>(),
+            <span class="ident">last_applied</span>: <span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">snapshot_last_included_index</span>(),
+        };
+
         <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">rf</span> <span class="op">=</span> <span class="ident">Raft</span> {
             <span class="ident">peers</span>,
-            <span class="ident">persister</span>,
             <span class="ident">me</span>,
             <span class="ident">role</span>: <span class="ident">RoleState::Follower</span>,
-            <span class="ident">p</span>: <span class="ident">PersistentState::new</span>(),
-            <span class="ident">v</span>: <span class="ident">VolatileState::new</span>(),
+            <span class="ident">p</span>,
+            <span class="ident">v</span>,
             <span class="ident">event_loop_tx</span>: <span class="prelude-val">None</span>,
             <span class="ident">timer_action_tx</span>: <span class="prelude-val">None</span>,
             <span class="ident">apply_tx</span>,
             <span class="ident">executor</span>: <span class="ident">SHARED_EXECUTOR</span>.<span class="ident">clone</span>(),
         };
-
-        <span class="comment">// may initialize from state persisted before a crash</span>
-        <span class="kw">let</span> <span class="ident">raft_state</span> <span class="op">=</span> <span class="ident">rf</span>.<span class="ident">persister</span>.<span class="ident">raft_state</span>();
-        <span class="ident">rf</span>.<span class="ident">restore</span>(<span class="kw-2">&amp;</span><span class="ident">raft_state</span>);
-
         <span class="ident">rf</span>.<span class="ident">turn_follower</span>();
+        <span class="macro">rlog!</span>(
+            <span class="ident">rf</span>,
+            <span class="string">&quot;start: volatile: {:?};  persist: {:?}&quot;</span>,
+            <span class="ident">rf</span>.<span class="ident">v</span>,
+            <span class="ident">rf</span>.<span class="ident">p</span>.<span class="ident">read</span>()
+        );
         <span class="ident">rf</span>
     }
 
@@ -1235,24 +1235,7 @@
     <span class="doccomment">/// see paper&#39;s Figure 2 for a description of what should be persistent.</span>
     <span class="kw">fn</span> <span class="ident">persist</span>(<span class="kw-2">&amp;</span><span class="self">self</span>, <span class="ident">snapshot</span>: <span class="prelude-ty">Option</span><span class="op">&lt;</span><span class="ident">Vec</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;</span><span class="op">&gt;</span>) {
         <span class="comment">// Your code here (2C).</span>
-        <span class="kw">let</span> <span class="ident">p</span> <span class="op">=</span> <span class="ident">bincode::serialize</span>(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="ident">p</span>).<span class="ident">unwrap</span>();
-
-        <span class="kw">if</span> <span class="kw">let</span> <span class="prelude-val">Some</span>(<span class="ident">ss</span>) <span class="op">=</span> <span class="ident">snapshot</span> {
-            <span class="self">self</span>.<span class="ident">persister</span>.<span class="ident">save_state_and_snapshot</span>(<span class="ident">p</span>, <span class="ident">ss</span>);
-        } <span class="kw">else</span> {
-            <span class="self">self</span>.<span class="ident">persister</span>.<span class="ident">save_raft_state</span>(<span class="ident">p</span>);
-        }
-    }
-
-    <span class="doccomment">/// restore previously persisted state.</span>
-    <span class="kw">fn</span> <span class="ident">restore</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">p</span>: <span class="kw-2">&amp;</span>[<span class="ident">u8</span>]) {
-        <span class="comment">// Your code here (2C).</span>
-        <span class="kw">if</span> <span class="kw">let</span> <span class="prelude-val">Ok</span>(<span class="ident">p</span>) <span class="op">=</span> <span class="ident">bincode::deserialize</span>(<span class="ident">p</span>) {
-            <span class="macro">rlog!</span>(<span class="self">self</span>, <span class="string">&quot;restored raft state&quot;</span>);
-            <span class="self">self</span>.<span class="ident">p</span> <span class="op">=</span> <span class="ident">p</span>;
-            <span class="self">self</span>.<span class="ident">v</span>.<span class="ident">commit_index</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">snapshot_last_included_index</span>();
-            <span class="self">self</span>.<span class="ident">v</span>.<span class="ident">last_applied</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">v</span>.<span class="ident">commit_index</span>;
-        }
+        <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">persist</span>(<span class="ident">snapshot</span>)
     }
 
     <span class="doccomment">/// The service using Raft (e.g. a k/v server) wants to start</span>
@@ -1272,7 +1255,15 @@
                     <span class="ident">data</span>,
                 };
 
-                <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">push</span>(<span class="ident">entry</span>); <span class="comment">// will sync on next heartbeat</span>
+                <span class="macro">rlog!</span>(
+                    <span class="ident">level</span>: <span class="ident">debug</span>,
+                    <span class="self">self</span>,
+                    <span class="string">&quot;start entry at index {}: {:?}&quot;</span>,
+                    <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">next_index</span>(),
+                    <span class="ident">entry</span>
+                );
+
+                <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">write</span>().<span class="ident">log</span>.<span class="ident">push</span>(<span class="ident">entry</span>); <span class="comment">// will sync on next heartbeat</span>
 
                 <span class="prelude-val">Ok</span>((<span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">last_index</span>() <span class="kw">as</span> <span class="ident">u64</span>, <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">last_term</span>()))
             }
@@ -1338,7 +1329,7 @@
             <span class="ident">leader_id</span>: <span class="self">self</span>.<span class="ident">me</span> <span class="kw">as</span> <span class="ident">u64</span>,
             <span class="ident">last_included_index</span>: <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">snapshot_last_included_index</span>() <span class="kw">as</span> <span class="ident">u64</span>,
             <span class="ident">last_included_term</span>: <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">snapshot_last_included_term</span>(),
-            <span class="ident">data</span>: <span class="self">self</span>.<span class="ident">persister</span>.<span class="ident">snapshot</span>(),
+            <span class="ident">data</span>: <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">persister</span>.<span class="ident">snapshot</span>(),
         }
     }
 }
@@ -1353,8 +1344,9 @@
             <span class="ident">Ordering::Equal</span> <span class="op">=</span><span class="op">&gt;</span> {}
             <span class="ident">Ordering::Greater</span> <span class="op">=</span><span class="op">&gt;</span> {
                 <span class="macro">rlog!</span>(<span class="self">self</span>, <span class="string">&quot;update term to {}&quot;</span>, <span class="ident">term</span>);
-                <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">current_term</span> <span class="op">=</span> <span class="ident">term</span>;
-                <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">voted_for</span> <span class="op">=</span> <span class="prelude-val">None</span>;
+                <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">p</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">write</span>();
+                <span class="ident">p</span>.<span class="ident">current_term</span> <span class="op">=</span> <span class="ident">term</span>;
+                <span class="ident">p</span>.<span class="ident">voted_for</span> <span class="op">=</span> <span class="prelude-val">None</span>;
             }
         }
     }
@@ -1469,6 +1461,7 @@
                 <span class="ident">index</span>: <span class="ident">i</span> <span class="kw">as</span> <span class="ident">u64</span>,
                 <span class="ident">command</span>: <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">data_at</span>(<span class="ident">i</span>).<span class="ident">unwrap</span>().<span class="ident">clone</span>(),
             };
+            <span class="macro">rlog!</span>(<span class="ident">level</span>: <span class="ident">debug</span>, <span class="self">self</span>, <span class="string">&quot;will apply {:?}&quot;</span>, <span class="ident">msg</span>);
             <span class="self">self</span>.<span class="ident">apply_tx</span>.<span class="ident">unbounded_send</span>(<span class="ident">msg</span>).<span class="ident">unwrap</span>();
         }
 
@@ -1554,7 +1547,8 @@
             <span class="ident">from_peer</span>,
             <span class="ident">included_index</span>,
         );
-        <span class="kw">if</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">compact_to</span>(<span class="ident">included_index</span>, <span class="ident">included_term</span>) {
+        <span class="kw">let</span> <span class="ident">success</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">write</span>().<span class="ident">log</span>.<span class="ident">compact_to</span>(<span class="ident">included_index</span>, <span class="ident">included_term</span>);
+        <span class="kw">if</span> <span class="ident">success</span> {
             <span class="kw">if</span> <span class="ident">included_index</span> <span class="op">&gt;</span><span class="op">=</span> <span class="self">self</span>.<span class="ident">v</span>.<span class="ident">commit_index</span> {
                 <span class="self">self</span>.<span class="ident">v</span>.<span class="ident">commit_index</span> <span class="op">=</span> <span class="ident">included_index</span>;
                 <span class="self">self</span>.<span class="ident">v</span>.<span class="ident">last_applied</span> <span class="op">=</span> <span class="ident">included_index</span>;
@@ -1595,7 +1589,6 @@
                 <span class="ident">new_next_index</span>,
                 <span class="ident">is_heart_beat</span>: <span class="kw">_</span>,
             } <span class="op">=</span><span class="op">&gt;</span> <span class="self">self</span>.<span class="ident">handle_append_entries_reply</span>(<span class="ident">from</span>, <span class="ident">reply</span>, <span class="ident">new_next_index</span>),
-            <span class="ident">Event::ForcePersist</span> <span class="op">=</span><span class="op">&gt;</span> <span class="self">self</span>.<span class="ident">persist</span>(<span class="prelude-val">None</span>),
             <span class="ident">Event::InstallSnapshotReply</span> {
                 <span class="ident">from</span>,
                 <span class="ident">reply</span>,
@@ -1611,7 +1604,7 @@
                 <span class="comment">// start new election</span>
                 <span class="self">self</span>.<span class="ident">turn_candidate</span>();
                 <span class="self">self</span>.<span class="ident">update_term</span>(<span class="self">self</span>.<span class="ident">p</span>.<span class="ident">current_term</span> <span class="op">+</span> <span class="number">1</span>);
-                <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">voted_for</span> <span class="op">=</span> <span class="prelude-val">Some</span>(<span class="self">self</span>.<span class="ident">me</span> <span class="kw">as</span> <span class="ident">u64</span>);
+                <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">write</span>().<span class="ident">voted_for</span> <span class="op">=</span> <span class="prelude-val">Some</span>(<span class="self">self</span>.<span class="ident">me</span> <span class="kw">as</span> <span class="ident">u64</span>);
                 <span class="self">self</span>.<span class="ident">start_new_election</span>();
             }
             <span class="kw">_</span> <span class="op">=</span><span class="op">&gt;</span> {} <span class="comment">// no timeout for leader</span>
@@ -1627,7 +1620,6 @@
             }
             <span class="kw">_</span> <span class="op">=</span><span class="op">&gt;</span> {} <span class="comment">// no heart beat for non-leader</span>
         }
-        <span class="self">self</span>.<span class="ident">persist</span>(<span class="prelude-val">None</span>); <span class="comment">// persist data on heart beat</span>
     }
 
     <span class="doccomment">/// RPC request for `RequestVote`.</span>
@@ -1661,7 +1653,7 @@
         };
 
         <span class="kw">if</span> <span class="ident">vote_for</span>.<span class="ident">is_some</span>() {
-            <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">voted_for</span> <span class="op">=</span> <span class="ident">vote_for</span>;
+            <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">write</span>().<span class="ident">voted_for</span> <span class="op">=</span> <span class="ident">vote_for</span>;
             <span class="self">self</span>.<span class="ident">reset_timeout</span>(); <span class="comment">// reset election timeout on voting</span>
         }
 
@@ -1755,13 +1747,14 @@
                                     <span class="macro">rlog!</span>(<span class="ident">level</span>: <span class="ident">warn</span>, <span class="self">self</span>, <span class="string">&quot;outdated append entries request&quot;</span>);
                                 }
                             } <span class="kw">else</span> {
-                                <span class="kw">while</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">next_index</span>() <span class="op">&gt;</span> <span class="ident">args</span>.<span class="ident">prev_log_index</span> <span class="kw">as</span> <span class="ident">usize</span> <span class="op">+</span> <span class="number">1</span> {
-                                    <span class="kw">let</span> <span class="kw">_</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">pop_back</span>().<span class="ident">expect</span>(<span class="string">&quot;entry must exist&quot;</span>);
-                                }
                                 <span class="kw">if</span> <span class="op">!</span><span class="ident">args</span>.<span class="ident">entries</span>.<span class="ident">is_empty</span>() {
                                     <span class="macro">rlog!</span>(<span class="self">self</span>, <span class="string">&quot;overwrite {} entries&quot;</span>, <span class="ident">args</span>.<span class="ident">entries</span>.<span class="ident">len</span>());
                                 }
-                                <span class="ident">args</span>.<span class="ident">entries</span>.<span class="ident">into_iter</span>().<span class="ident">for_each</span>(<span class="op">|</span><span class="ident">e</span><span class="op">|</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">push</span>(<span class="ident">e</span>));
+                                <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">p</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">write</span>();
+                                <span class="kw">while</span> <span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">next_index</span>() <span class="op">&gt;</span> <span class="ident">args</span>.<span class="ident">prev_log_index</span> <span class="kw">as</span> <span class="ident">usize</span> <span class="op">+</span> <span class="number">1</span> {
+                                    <span class="kw">let</span> <span class="kw">_</span> <span class="op">=</span> <span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">pop_back</span>().<span class="ident">expect</span>(<span class="string">&quot;entry must exist&quot;</span>);
+                                }
+                                <span class="ident">args</span>.<span class="ident">entries</span>.<span class="ident">into_iter</span>().<span class="ident">for_each</span>(<span class="op">|</span><span class="ident">e</span><span class="op">|</span> <span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">push</span>(<span class="ident">e</span>));
                             }
 
                             <span class="kw">if</span> <span class="ident">args</span>.<span class="ident">leader_commit_index</span> <span class="kw">as</span> <span class="ident">usize</span> <span class="op">&gt;</span> <span class="self">self</span>.<span class="ident">v</span>.<span class="ident">commit_index</span> {
@@ -1960,9 +1953,8 @@
                             <span class="ident">raft</span>.<span class="ident">write</span>().<span class="ident">unwrap</span>().<span class="ident">handle_event</span>(<span class="ident">event</span>);
                         }
                         <span class="kw">_</span> <span class="op">=</span> <span class="ident">shutdown_rx</span> <span class="op">=</span><span class="op">&gt;</span> {
-                            <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">raft</span> <span class="op">=</span> <span class="ident">raft</span>.<span class="ident">write</span>().<span class="ident">unwrap</span>();
-                            <span class="macro">rlog!</span>(<span class="ident">level</span>: <span class="ident">warn</span>, <span class="ident">raft</span>, <span class="string">&quot;being killed&quot;</span>);
-                            <span class="ident">raft</span>.<span class="ident">handle_event</span>(<span class="ident">Event::ForcePersist</span>); <span class="comment">// trigger persist mannualy</span>
+                            <span class="kw">let</span> <span class="ident">raft</span> <span class="op">=</span> <span class="ident">raft</span>.<span class="ident">read</span>().<span class="ident">unwrap</span>();
+                            <span class="macro">rlog!</span>(<span class="ident">level</span>: <span class="ident">warn</span>, <span class="ident">raft</span>, <span class="string">&quot;being killed: volatile: {:?};  persist: {:?}&quot;</span>, <span class="ident">raft</span>.<span class="ident">v</span>, <span class="ident">raft</span>.<span class="ident">p</span>.<span class="ident">read</span>());
                             <span class="kw">break</span>; <span class="comment">// will cause event_loop_rx to be dropped</span>
                         }
                     }

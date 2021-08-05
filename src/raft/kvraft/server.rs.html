@@ -290,13 +290,13 @@
 <span id="290">290</span>
 </pre><pre class="rust">
 <span class="kw">use</span> <span class="ident">std::collections::HashMap</span>;
+<span class="kw">use</span> <span class="ident">std::mem</span>;
 <span class="kw">use</span> <span class="ident">std::sync</span>::{<span class="ident">Arc</span>, <span class="ident">RwLock</span>};
 
 <span class="kw">use</span> <span class="ident">futures::channel::mpsc</span>::{<span class="ident">unbounded</span>, <span class="ident">UnboundedReceiver</span>};
 <span class="kw">use</span> <span class="ident">futures::channel::oneshot</span>;
 <span class="kw">use</span> <span class="ident">futures::task::SpawnExt</span>;
 <span class="kw">use</span> <span class="ident">futures::StreamExt</span>;
-<span class="kw">use</span> <span class="ident">uuid::Uuid</span>;
 
 <span class="kw">use</span> <span class="kw">super</span><span class="ident">::errors</span>::{<span class="ident">Error</span>, <span class="prelude-ty">Result</span>};
 <span class="kw">use</span> <span class="kw">crate</span><span class="ident">::proto::kvraftpb</span>::<span class="kw-2">*</span>;
@@ -382,9 +382,9 @@
         <span class="prelude-val">Ok</span>(<span class="ident">rx</span>)
     }
 
-    <span class="kw">fn</span> <span class="ident">start_get</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">req</span>: <span class="ident">GetRequest</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="prelude-ty">Result</span><span class="op">&lt;</span><span class="ident">oneshot::Receiver</span><span class="op">&lt;</span><span class="ident">NotifyReply</span><span class="op">&gt;</span><span class="op">&gt;</span> {
+    <span class="kw">fn</span> <span class="ident">start_get</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="kw-2">mut</span> <span class="ident">req</span>: <span class="ident">GetRequest</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="prelude-ty">Result</span><span class="op">&lt;</span><span class="ident">oneshot::Receiver</span><span class="op">&lt;</span><span class="ident">NotifyReply</span><span class="op">&gt;</span><span class="op">&gt;</span> {
         <span class="kw">let</span> <span class="ident">command</span> <span class="op">=</span> <span class="ident">Command</span> {
-            <span class="ident">id</span>: <span class="ident">Uuid::new_v4</span>().<span class="ident">to_string</span>(),
+            <span class="ident">id</span>: <span class="ident">mem::take</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">req</span>.<span class="ident">id</span>),
             <span class="ident">value</span>: <span class="prelude-val">Some</span>(<span class="ident">command::Value::Get</span>(<span class="ident">req</span>)),
         };
         <span class="self">self</span>.<span class="ident">start</span>(<span class="ident">command</span>)
@@ -392,10 +392,10 @@
 
     <span class="kw">fn</span> <span class="ident">start_put_append</span>(
         <span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>,
-        <span class="ident">req</span>: <span class="ident">PutAppendRequest</span>,
+        <span class="kw-2">mut</span> <span class="ident">req</span>: <span class="ident">PutAppendRequest</span>,
     ) <span class="op">-</span><span class="op">&gt;</span> <span class="prelude-ty">Result</span><span class="op">&lt;</span><span class="ident">oneshot::Receiver</span><span class="op">&lt;</span><span class="ident">NotifyReply</span><span class="op">&gt;</span><span class="op">&gt;</span> {
         <span class="kw">let</span> <span class="ident">command</span> <span class="op">=</span> <span class="ident">Command</span> {
-            <span class="ident">id</span>: <span class="ident">Uuid::new_v4</span>().<span class="ident">to_string</span>(),
+            <span class="ident">id</span>: <span class="ident">mem::take</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">req</span>.<span class="ident">id</span>),
             <span class="ident">value</span>: <span class="prelude-val">Some</span>(<span class="ident">command::Value::PutAppend</span>(<span class="ident">req</span>)),
         };
         <span class="self">self</span>.<span class="ident">start</span>(<span class="ident">command</span>)
