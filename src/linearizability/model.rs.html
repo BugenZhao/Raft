@@ -123,8 +123,8 @@
     }
 }
 
-<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Debug</span>)]</span>
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Operation</span><span class="op">&lt;</span><span class="ident">I</span>: <span class="ident">Debug</span>, <span class="ident">O</span>: <span class="ident">Debug</span><span class="op">&gt;</span> {
+<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Debug</span>, <span class="ident">Clone</span>)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Operation</span><span class="op">&lt;</span><span class="ident">I</span>: <span class="ident">Debug</span> <span class="op">+</span> <span class="ident">Clone</span>, <span class="ident">O</span>: <span class="ident">Debug</span> <span class="op">+</span> <span class="ident">Clone</span><span class="op">&gt;</span> {
     <span class="kw">pub</span> <span class="ident">input</span>: <span class="ident">I</span>,
     <span class="kw">pub</span> <span class="ident">call</span>: <span class="ident">i64</span>, <span class="comment">// invocation time</span>
     <span class="kw">pub</span> <span class="ident">output</span>: <span class="ident">O</span>,
@@ -147,8 +147,8 @@
 
 <span class="kw">pub</span> <span class="kw">trait</span> <span class="ident">Model</span>: <span class="ident">Clone</span> <span class="op">+</span> <span class="ident">Send</span> <span class="op">+</span> <span class="lifetime">&#39;static</span> {
     <span class="kw">type</span> <span class="ident">State</span>: <span class="ident">Clone</span> <span class="op">+</span> <span class="ident">Display</span> <span class="op">+</span> <span class="ident">PartialEq</span>;
-    <span class="kw">type</span> <span class="ident">Input</span>: <span class="ident">Send</span> <span class="op">+</span> <span class="ident">Debug</span> <span class="op">+</span> <span class="lifetime">&#39;static</span>;
-    <span class="kw">type</span> <span class="ident">Output</span>: <span class="ident">Send</span> <span class="op">+</span> <span class="ident">Debug</span> <span class="op">+</span> <span class="lifetime">&#39;static</span>;
+    <span class="kw">type</span> <span class="ident">Input</span>: <span class="ident">Send</span> <span class="op">+</span> <span class="ident">Debug</span> <span class="op">+</span> <span class="ident">Clone</span> <span class="op">+</span> <span class="lifetime">&#39;static</span>;
+    <span class="kw">type</span> <span class="ident">Output</span>: <span class="ident">Send</span> <span class="op">+</span> <span class="ident">Debug</span> <span class="op">+</span> <span class="ident">Clone</span> <span class="op">+</span> <span class="lifetime">&#39;static</span>;
 
     <span class="comment">// Partition functions, such that a history is linearizable if an only</span>
     <span class="comment">// if each partition is linearizable. If you don&#39;t want to implement</span>
