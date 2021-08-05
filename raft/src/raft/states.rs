@@ -4,6 +4,7 @@ use std::{
     collections::{HashSet, VecDeque},
     fmt::{self, Display},
     ops,
+    sync::Arc,
 };
 
 use super::persister::Persister;
@@ -199,10 +200,52 @@ impl PersistentState {
     }
 }
 
+/// Write guard for wrapped `PersistentState`,
+/// will persisted the state when dropped.
+pub struct PersistentStateGuard<'a> {
+    inner: &'a mut PersistentState,
+    on_drop: Option<Box<dyn FnOnce(&PersistentState)>>,
+}
+
+impl<'a> PersistentStateGuard<'a> {
+    fn new(inner: &'a mut PersistentState, persister: Arc<dyn Persister>) -> Self {
+        Self {
+            inner,
+            on_drop: Some(Box::new(|state| {
+                PersistentStateWrapper::do_persist(persister, state, None);
+            })),
+        }
+    }
+}
+
+impl Drop for PersistentStateGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(on_drop) = self.on_drop.take() {
+            on_drop(self.inner)
+        }
+    }
+}
+
+impl ops::Deref for PersistentStateGuard<'_> {
+    type Target = PersistentState;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+impl ops::DerefMut for PersistentStateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+/// Wrapper of `PersistentState` for persistence purpose.
 pub struct PersistentStateWrapper {
+    /// The inner state.
     state: PersistentState,
     /// Object to serialize and deserialize this peer's persisted state.
-    pub persister: Box<dyn Persister>,
+    pub persister: Arc<dyn Persister>,
 }
 
 impl PersistentStateWrapper {
@@ -210,32 +253,44 @@ impl PersistentStateWrapper {
     pub fn from(persister: Box<dyn Persister>) -> Self {
         let data = persister.raft_state();
         let state = bincode::deserialize(&data).unwrap_or_else(|_| PersistentState::new());
-        Self { state, persister }
+        Self {
+            state,
+            persister: persister.into(),
+        }
     }
 
+    /// Get a immutable reference to the state.
     pub fn read(&self) -> &PersistentState {
         &self.state
     }
 
-    pub fn write<F, R>(&mut self, f: F) -> R
-    where
-        F: FnOnce(&mut PersistentState) -> R,
-    {
-        let r = f(&mut self.state);
-        self.persist(None);
-        r
+    /// Acquire a write guard for wrapped `PersistentState`,
+    /// and automatically persist it when dropped.
+    pub fn write(&mut self) -> PersistentStateGuard {
+        let persister = Arc::clone(&self.persister);
+        PersistentStateGuard::new(&mut self.state, persister)
     }
 
     /// save Raft's persistent state to stable storage,
     /// where it can later be retrieved after a crash and restart.
     pub fn persist(&self, snapshot: Option<Vec<u8>>) {
         // Your code here (2C).
-        let p = bincode::serialize(&self.state).unwrap();
+        Self::do_persist(&self.persister, &self.state, snapshot)
+    }
 
+    /// Do persist using `persister`.
+    fn do_persist(
+        persister: impl AsRef<dyn Persister>,
+        state: &PersistentState,
+        snapshot: Option<Vec<u8>>,
+    ) {
+        let persister = persister.as_ref();
+
+        let p = bincode::serialize(state).unwrap();
         if let Some(ss) = snapshot {
-            self.persister.save_state_and_snapshot(p, ss);
+            persister.save_state_and_snapshot(p, ss);
         } else {
-            self.persister.save_raft_state(p);
+            persister.save_raft_state(p);
         }
     }
 }

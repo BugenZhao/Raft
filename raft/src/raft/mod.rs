@@ -185,7 +185,7 @@ impl Raft {
                     entry
                 );
 
-                self.p.write(|p| p.log.push(entry)); // will sync on next heartbeat
+                self.p.write().log.push(entry); // will sync on next heartbeat
 
                 Ok((self.p.log.last_index() as u64, self.p.log.last_term()))
             }
@@ -266,10 +266,9 @@ impl Raft {
             Ordering::Equal => {}
             Ordering::Greater => {
                 rlog!(self, "update term to {}", term);
-                self.p.write(|p| {
-                    p.current_term = term;
-                    p.voted_for = None;
-                })
+                let mut p = self.p.write();
+                p.current_term = term;
+                p.voted_for = None;
             }
         }
     }
@@ -470,9 +469,7 @@ impl Raft {
             from_peer,
             included_index,
         );
-        let success = self
-            .p
-            .write(|p| p.log.compact_to(included_index, included_term));
+        let success = self.p.write().log.compact_to(included_index, included_term);
         if success {
             if included_index >= self.v.commit_index {
                 self.v.commit_index = included_index;
@@ -529,8 +526,7 @@ impl Raft {
                 // start new election
                 self.turn_candidate();
                 self.update_term(self.p.current_term + 1);
-                let me = self.me as u64;
-                self.p.write(|p| p.voted_for = Some(me));
+                self.p.write().voted_for = Some(self.me as u64);
                 self.start_new_election();
             }
             _ => {} // no timeout for leader
@@ -579,7 +575,7 @@ impl Raft {
         };
 
         if vote_for.is_some() {
-            self.p.write(|p| p.voted_for = vote_for);
+            self.p.write().voted_for = vote_for;
             self.reset_timeout(); // reset election timeout on voting
         }
 
@@ -673,17 +669,14 @@ impl Raft {
                                     rlog!(level: warn, self, "outdated append entries request");
                                 }
                             } else {
-                                let entries = args.entries;
-                                if !entries.is_empty() {
-                                    rlog!(self, "overwrite {} entries", entries.len());
+                                if !args.entries.is_empty() {
+                                    rlog!(self, "overwrite {} entries", args.entries.len());
                                 }
-                                let prev_log_index = args.prev_log_index;
-                                self.p.write(|p| {
-                                    while p.log.next_index() > prev_log_index as usize + 1 {
-                                        let _ = p.log.pop_back().expect("entry must exist");
-                                    }
-                                    entries.into_iter().for_each(|e| p.log.push(e));
-                                });
+                                let mut p = self.p.write();
+                                while p.log.next_index() > args.prev_log_index as usize + 1 {
+                                    let _ = p.log.pop_back().expect("entry must exist");
+                                }
+                                args.entries.into_iter().for_each(|e| p.log.push(e));
                             }
 
                             if args.leader_commit_index as usize > self.v.commit_index {
