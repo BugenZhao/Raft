@@ -1,11 +1,11 @@
 use std::collections::HashMap;
+use std::mem;
 use std::sync::{Arc, RwLock};
 
 use futures::channel::mpsc::{unbounded, UnboundedReceiver};
 use futures::channel::oneshot;
 use futures::task::SpawnExt;
 use futures::StreamExt;
-use uuid::Uuid;
 
 use super::errors::{Error, Result};
 use crate::proto::kvraftpb::*;
@@ -91,9 +91,9 @@ impl KvServer {
         Ok(rx)
     }
 
-    fn start_get(&mut self, req: GetRequest) -> Result<oneshot::Receiver<NotifyReply>> {
+    fn start_get(&mut self, mut req: GetRequest) -> Result<oneshot::Receiver<NotifyReply>> {
         let command = Command {
-            id: Uuid::new_v4().to_string(),
+            id: mem::take(&mut req.id),
             value: Some(command::Value::Get(req)),
         };
         self.start(command)
@@ -101,10 +101,10 @@ impl KvServer {
 
     fn start_put_append(
         &mut self,
-        req: PutAppendRequest,
+        mut req: PutAppendRequest,
     ) -> Result<oneshot::Receiver<NotifyReply>> {
         let command = Command {
-            id: Uuid::new_v4().to_string(),
+            id: mem::take(&mut req.id),
             value: Some(command::Value::PutAppend(req)),
         };
         self.start(command)

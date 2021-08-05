@@ -15,6 +15,7 @@ message PutAppendRequest {
   // "Put" or "Append"
   Op op = 3;
   // You'll have to add definitions here.
+  string id = 4;
 }
 
 message PutAppendReply {
@@ -25,6 +26,7 @@ message PutAppendReply {
 message GetRequest {
   string key = 1;
   // You'll have to add definitions here.
+  string id = 2;
 }
 
 message GetReply {

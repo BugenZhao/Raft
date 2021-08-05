@@ -1,6 +1,15 @@
-use std::fmt;
+use std::{
+    fmt,
+    future::Future,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
-use futures::executor::block_on;
+use futures::{
+    executor::block_on,
+    future::{select, Either},
+};
+use uuid::Uuid;
 
 use crate::proto::kvraftpb::{self, *};
 
@@ -13,6 +22,7 @@ pub struct Clerk {
     pub name: String,
     pub servers: Vec<KvClient>,
     // You will have to modify this struct.
+    last_leader: AtomicUsize,
 }
 
 impl fmt::Debug for Clerk {
@@ -24,25 +34,67 @@ impl fmt::Debug for Clerk {
 impl Clerk {
     pub fn new(name: String, servers: Vec<KvClient>) -> Clerk {
         // You'll have to add code here.
-        Clerk { name, servers }
+        Clerk {
+            name,
+            servers,
+            last_leader: 0.into(),
+        }
+    }
+
+    fn cycle_servers(&self) -> impl Iterator<Item = (usize, &KvClient)> {
+        self.servers
+            .iter()
+            .enumerate()
+            .cycle()
+            .skip(self.last_leader.load(Ordering::Relaxed))
+    }
+
+    async fn call<Req, F, Rep, V>(&self, build_request: Req) -> V
+    where
+        Req: Fn(&KvClient) -> F,
+        F: Future<Output = labrpc::Result<Rep>> + Unpin,
+        Rep: Reply<Value = V>,
+    {
+        let mut iter = self.cycle_servers();
+
+        'outer: loop {
+            let (i, server) = iter.next().unwrap();
+            'retry: loop {
+                let request = build_request(server);
+                let timeout = futures_timer::Delay::new(Duration::from_millis(1000));
+                match select(request, timeout).await {
+                    Either::Left((Ok(reply), _)) => {
+                        if reply.wrong_leader() {
+                            continue 'outer;
+                        } else {
+                            self.last_leader.store(i, Ordering::Relaxed);
+                            if !reply.error().is_empty() {
+                                error!("{}", reply.error());
+                                continue 'retry;
+                            } else {
+                                break 'outer reply.take_value();
+                            }
+                        }
+                    }
+                    Either::Left((Err(e), _)) => {
+                        error!("{}", e.to_string());
+                        continue 'outer;
+                    }
+                    Either::Right((_, _)) => {
+                        error!("timeout");
+                        continue 'outer;
+                    }
+                }
+            }
+        }
     }
 
     pub async fn get_async(&self, key: String) -> String {
-        let args = GetRequest { key };
-        let mut iter = self.servers.iter().cycle();
-        let value = loop {
-            let server = iter.next().unwrap();
-            match server.get(&args).await {
-                Ok(reply) => {
-                    if reply.wrong_leader || !reply.err.is_empty() {
-                        continue;
-                    }
-                    break reply.value;
-                }
-                Err(_) => continue,
-            }
+        let args = GetRequest {
+            id: Uuid::new_v4().to_string(),
+            key,
         };
-        value
+        self.call(|s| s.get(&args)).await
     }
 
     /// fetch the current value for a key.
@@ -64,29 +116,19 @@ impl Clerk {
         // You will have to modify this function.
         let args = match op {
             Op::Put(key, value) => PutAppendRequest {
+                id: Uuid::new_v4().to_string(),
                 key,
                 value,
                 op: kvraftpb::Op::Put as i32,
             },
             Op::Append(key, value) => PutAppendRequest {
+                id: Uuid::new_v4().to_string(),
                 key,
                 value,
                 op: kvraftpb::Op::Append as i32,
             },
         };
-        let mut iter = self.servers.iter().cycle();
-        loop {
-            let server = iter.next().unwrap();
-            match server.put_append(&args).await {
-                Ok(reply) => {
-                    if reply.wrong_leader || !reply.err.is_empty() {
-                        continue;
-                    }
-                    break;
-                }
-                Err(_) => continue,
-            }
-        }
+        self.call(|s| s.put_append(&args)).await
     }
 
     pub async fn put_async(&self, key: String, value: String) {

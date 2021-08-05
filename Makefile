@@ -1,7 +1,7 @@
 export RUST_BACKTRACE=1
 
 RUST_TEST_THREADS ?=1
-LOG_LEVEL ?= raft::kvraft=info,raft::kvraft::config=debug,raft::raft=warn,percolator=info
+LOG_LEVEL ?= raft::kvraft=info,raft::kvraft::tests=debug,raft::raft=debug,percolator=info
 
 check:
 	cargo fmt --all -- --check
