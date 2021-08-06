@@ -14,9 +14,9 @@ Base code and lab parts marked with `*` are migrated from [pingcap/talent-plan](
   - [x] Part 2B: log \*
   - [x] Part 2C: persistence \*
   - [x] Part 2D: log compaction
-- [ ] Lab 3
+- [x] Lab 3
   - [x] Part 3A: Key/value service without snapshots \*
-  - [ ] Part 3B: Key/value service with snapshots (\*)
+  - [x] Part 3B: Key/value service with snapshots (\*)
 
 # Distributed Systems in Rust
 

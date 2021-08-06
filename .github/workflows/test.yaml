@@ -21,7 +21,7 @@ jobs:
           retry_on: timeout
           command: make test_2
   test-3a:
-    name: Test 3A
+    name: Test 3
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -37,4 +37,4 @@ jobs:
           timeout_minutes: 10
           max_attempts: 3
           retry_on: timeout
-          command: make test_3a
+          command: make test_3

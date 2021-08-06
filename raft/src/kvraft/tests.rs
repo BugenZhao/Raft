@@ -860,7 +860,7 @@ fn test_snapshot_size_3b() {
 
     cfg.begin("Test: snapshot size is reasonable (3B)");
 
-    for _ in 0..200 {
+    for _ in 0..100 {
         put(&cfg, &ck, "x", "0");
         check(&cfg, &ck, "x", "0");
         put(&cfg, &ck, "x", "1");

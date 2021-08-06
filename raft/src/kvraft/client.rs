@@ -44,7 +44,7 @@ impl fmt::Debug for Clerk {
 impl Clerk {
     pub fn new(name: String, servers: Vec<KvClient>) -> Clerk {
         // You'll have to add code here.
-        let id = format!("{}-{:x}", name, Uuid::new_v4().as_u128());
+        let id = format!("{}-{:x}", name, Uuid::new_v4().as_fields().0);
 
         Clerk {
             name,
@@ -78,7 +78,7 @@ impl Clerk {
             let (i, server) = iter.next().unwrap();
 
             'retry: loop {
-                clog!(self, args, "request to #{}", i);
+                clog!(level: debug, self, args, "request to #{}", i);
                 let request = server.op(&args);
                 let timeout = futures_timer::Delay::new(Duration::from_millis(1000));
                 match select(request, timeout).await {
@@ -91,6 +91,7 @@ impl Clerk {
                                 clog!(level: warn, self, args, "retry: {}", reply.err);
                                 continue 'retry;
                             } else {
+                                clog!(self, args, "successful request to #{}", i);
                                 break 'server reply.value;
                             }
                         }

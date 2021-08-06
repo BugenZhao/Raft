@@ -24,6 +24,10 @@ use crate::{Executor, SHARED_EXECUTOR};
 
 pub use self::states::State;
 
+/// Raft peer heart beat interval in millis,
+/// should not be too small to ensure passing tests.
+const HEART_BEAT_MILLIS: u64 = 120;
+
 /// Message sent to the service.
 #[derive(Debug)]
 pub enum ApplyMsg {
@@ -901,12 +905,12 @@ impl Node {
             .spawn(async move {
                 let build_timeout_timer = || {
                     futures_timer::Delay::new(Duration::from_millis(
-                        rand::thread_rng().gen_range(300, 500),
+                        rand::thread_rng().gen_range(HEART_BEAT_MILLIS * 3, HEART_BEAT_MILLIS * 5),
                     ))
                     .fuse()
                 };
                 let build_hb_timer =
-                    || futures_timer::Delay::new(Duration::from_millis(100)).fuse();
+                    || futures_timer::Delay::new(Duration::from_millis(HEART_BEAT_MILLIS)).fuse();
 
                 let mut timeout_timer = build_timeout_timer();
                 let mut hb_timer = build_hb_timer();

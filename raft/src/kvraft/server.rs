@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use futures::channel::mpsc::{unbounded, UnboundedReceiver};
-use futures::channel::oneshot;
-use futures::task::SpawnExt;
-use futures::StreamExt;
-
 use super::errors::{Error, Result};
 use crate::proto::kvraftpb::*;
 use crate::raft::{self, ApplyMsg};
 use crate::Executor;
+use futures::channel::mpsc::{unbounded, UnboundedReceiver};
+use futures::channel::oneshot;
+use futures::task::SpawnExt;
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 
 /// Macro for logging message combined with state of the kv server.
 macro_rules! kvlog {
@@ -39,21 +39,33 @@ type Command = KvRequest;
 type CommandIndex = u64;
 type ClerkId = String;
 
+/// State of a key-value server that should be included in the snapshots.
+#[derive(Serialize, Deserialize, Default)]
+struct PersistentState {
+    /// Simple hash-based kv storage.
+    store: HashMap<String, String>,
+    /// Sequence number of the latest applied request for each clerk.
+    max_seqs: HashMap<ClerkId, u64>,
+}
+
+impl PersistentState {
+    fn new() -> Self {
+        Default::default()
+    }
+}
+
 /// A key-value server.
 pub struct KvServer {
     /// Underlying Raft node.
     pub raft: raft::Node,
-    /// Same as `raft.me`
+    /// Same as `raft.me`.
     me: usize,
     /// snapshot if log grows this big
-    #[allow(dead_code)]
     max_raft_state: Option<usize>,
-    /// Simple hash-based kv storage.
-    store: HashMap<String, String>,
+    /// States that will be persisted into snapshots.
+    p: PersistentState,
     /// Notifiers for each under-processing request.
     notifiers: HashMap<CommandIndex, Notifier>,
-    /// Sequence number of the latest applied request for each clerk.
-    max_seqs: HashMap<ClerkId, u64>,
 }
 
 impl KvServer {
@@ -67,6 +79,10 @@ impl KvServer {
     ) -> (KvServer, UnboundedReceiver<ApplyMsg>) {
         // You may need initialization code here.
 
+        // restore persistent state from snapshot
+        let p =
+            bincode::deserialize(&persister.snapshot()).unwrap_or_else(|_| PersistentState::new());
+
         let (apply_tx, apply_rx) = unbounded();
         let raft_inner = raft::Raft::new(servers, me, persister, apply_tx);
         let raft = raft::Node::new(raft_inner);
@@ -75,10 +91,10 @@ impl KvServer {
             raft,
             me,
             max_raft_state,
-            store: HashMap::new(),
+            p,
             notifiers: HashMap::new(),
-            max_seqs: HashMap::new(),
         };
+
         (kv, apply_rx)
     }
 }
@@ -106,8 +122,8 @@ impl KvServer {
                 kvlog!(self, "apply command: {:?}", req);
 
                 let to_apply = {
-                    // only apply new requests, that is with larger seq number
-                    let max_seq = self.max_seqs.entry(req.cid.clone()).or_default();
+                    let max_seq = self.p.max_seqs.entry(req.cid.clone()).or_insert(0);
+                    // only apply new requests, that is, with larger seq number
                     if req.seq > *max_seq {
                         *max_seq = req.seq;
                         true
@@ -120,23 +136,24 @@ impl KvServer {
                     Op::Put => {
                         if to_apply {
                             kvlog!(self, "Put: {:?}", req);
-                            self.store.insert(req.key, req.value);
+                            self.p.store.insert(req.key, req.value);
                         }
                         NotifyReply::PutAppend
                     }
                     Op::Append => {
                         if to_apply {
-                            self.store
+                            self.p
+                                .store
                                 .entry(req.key.clone())
                                 .or_default()
                                 .push_str(&req.value);
-                            let value = self.store.get(&req.key).cloned().unwrap_or_default();
+                            let value = self.p.store.get(&req.key).cloned().unwrap_or_default();
                             kvlog!(self, "After Append: {:?} => {:?}", req, value);
                         }
                         NotifyReply::PutAppend
                     }
                     Op::Get => {
-                        let value = self.store.get(&req.key).cloned().unwrap_or_default();
+                        let value = self.p.store.get(&req.key).cloned().unwrap_or_default();
                         kvlog!(self, "Get: {:?} => {:?}", req, value);
                         NotifyReply::Get { value }
                     }
@@ -155,8 +172,35 @@ impl KvServer {
                         kvlog!(level: warn, self, "not THAT leader anymore");
                     }
                 }
+
+                self.may_snapshot(index);
             }
-            ApplyMsg::Snapshot { .. } => todo!("snapshot not implemented"),
+            // snapshot from peer (InstallSnapshot RPC)
+            ApplyMsg::Snapshot {
+                index,
+                term,
+                snapshot,
+            } => {
+                let p = bincode::deserialize(&snapshot).unwrap();
+                let success = self.raft.cond_install_snapshot(term, index, snapshot);
+                if success {
+                    self.p = p;
+                }
+            }
+        }
+    }
+
+    /// Check the log size and decide whether to ask Raft to compact its log.
+    fn may_snapshot(&mut self, index: u64) {
+        if self.max_raft_state.map(|max| self.raft.log_size() >= max) == Some(true) {
+            kvlog!(
+                self,
+                "do snapshot with: log size: {}, last included index: {}",
+                self.raft.log_size(),
+                index
+            );
+            let snapshot = bincode::serialize(&self.p).unwrap();
+            self.raft.snapshot(index, snapshot);
         }
     }
 }
