@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::proto::kvraftpb::{self, *};
 
-/// Macro for logging message combined with state of the Raft peer.
+/// Macro for logging message combined with state and command of the kv clerk.
 macro_rules! clog {
     (level: $level:ident, $cl:expr, $args:expr, $($arg:tt)+) => {
         ::log::$level!("CL [{}] {} [while {:?}]", $cl.name, format_args!($($arg)+), $args)
@@ -22,12 +22,16 @@ macro_rules! clog {
     };
 }
 
+/// A key-value clerk.
 pub struct Clerk {
     pub name: String,
+    /// All accessible kv servers.
     pub servers: Vec<KvClient>,
     // You will have to modify this struct.
     id: String,
+    /// Sequence number for next request.
     next_seq: AtomicU64,
+    /// Index of the last remembered leader in `servers`.
     last_leader: AtomicUsize,
 }
 
@@ -51,10 +55,12 @@ impl Clerk {
         }
     }
 
+    /// Get the next sequence number and increase it.
     fn next_seq(&self) -> u64 {
         self.next_seq.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// An infinite iterator of all servers, start from `last_leader`.
     fn cycle_servers(&self) -> impl Iterator<Item = (usize, &KvClient)> {
         self.servers
             .iter()
@@ -63,10 +69,12 @@ impl Clerk {
             .skip(self.last_leader.load(Ordering::Relaxed))
     }
 
+    /// Call servers for given `args` repeatedly until success.
     async fn call(&self, args: KvRequest) -> String {
         let mut iter = self.cycle_servers();
 
-        'outer: loop {
+        'server: loop {
+            // select next server
             let (i, server) = iter.next().unwrap();
 
             'retry: loop {
@@ -76,30 +84,34 @@ impl Clerk {
                 match select(request, timeout).await {
                     Either::Left((Ok(reply), _)) => {
                         if reply.wrong_leader {
-                            continue 'outer;
+                            continue 'server;
                         } else {
                             self.last_leader.store(i, Ordering::Relaxed);
                             if !reply.err.is_empty() {
                                 clog!(level: warn, self, args, "retry: {}", reply.err);
                                 continue 'retry;
                             } else {
-                                break 'outer reply.value;
+                                break 'server reply.value;
                             }
                         }
                     }
                     Either::Left((Err(e), _)) => {
                         clog!(level: warn, self, args, "try next server: {}", e);
-                        continue 'outer;
+                        continue 'server;
                     }
                     Either::Right((_, _)) => {
                         clog!(level: warn, self, args, "timeout");
-                        continue 'outer;
+                        continue 'server;
                     }
                 }
             }
         }
     }
 
+    /// Async version of `get` request.
+    ///
+    /// Note that we cannot call `block_on` if we already entered a executor.
+    /// Thus, this method should be called in any async context.
     pub async fn get_async(&self, key: String) -> String {
         let args = KvRequest {
             key,
@@ -122,6 +134,10 @@ impl Clerk {
         block_on(self.get_async(key))
     }
 
+    /// Async version of `put` request.
+    ///
+    /// Note that we cannot call `block_on` if we already entered a executor.
+    /// Thus, this method should be called in any async context.
     pub async fn put_async(&self, key: String, value: String) {
         let args = KvRequest {
             key,
@@ -133,10 +149,15 @@ impl Clerk {
         self.call(args).await;
     }
 
+    /// Put a key-value pair into kv servers.
     pub fn put(&self, key: String, value: String) {
         block_on(self.put_async(key, value))
     }
 
+    /// Async version of `append` request.
+    ///
+    /// Note that we cannot call `block_on` if we already entered a executor.
+    /// Thus, this method should be called in any async context.
     pub async fn append_async(&self, key: String, value: String) {
         let args = KvRequest {
             key,
@@ -148,6 +169,8 @@ impl Clerk {
         self.call(args).await;
     }
 
+    /// Append the `value` to the entry for `key`.
+    /// Will do insertion if the entry not exists.
     pub fn append(&self, key: String, value: String) {
         block_on(self.append_async(key, value))
     }

@@ -11,7 +11,7 @@ use crate::proto::kvraftpb::*;
 use crate::raft::{self, ApplyMsg};
 use crate::Executor;
 
-/// Macro for logging message combined with state of the Raft peer.
+/// Macro for logging message combined with state of the kv server.
 macro_rules! kvlog {
     (level: $level:ident, $kv:expr, $($arg:tt)+) => {{
         let leader_desc = $kv.raft.is_leader().then(|| "Leader").unwrap_or("Non-leader");
@@ -22,31 +22,43 @@ macro_rules! kvlog {
     };
 }
 
+/// Reply for notifier.
 #[derive(Debug, Clone)]
 enum NotifyReply {
     Get { value: String },
     PutAppend,
 }
 
-type Command = KvRequest;
+/// Notifier for applied requests.
 struct Notifier {
     term: u64,
     sender: oneshot::Sender<NotifyReply>,
 }
 
+type Command = KvRequest;
+type CommandIndex = u64;
+type ClerkId = String;
+
+/// A key-value server.
 pub struct KvServer {
+    /// Underlying Raft node.
     pub raft: raft::Node,
+    /// Same as `raft.me`
     me: usize,
-    // snapshot if log grows this big
+    /// snapshot if log grows this big
     #[allow(dead_code)]
     max_raft_state: Option<usize>,
-    // Your definitions here.
+    /// Simple hash-based kv storage.
     store: HashMap<String, String>,
-    notifiers: HashMap<u64, Notifier>,
-    max_seqs: HashMap<String, u64>,
+    /// Notifiers for each under-processing request.
+    notifiers: HashMap<CommandIndex, Notifier>,
+    /// Sequence number of the latest applied request for each clerk.
+    max_seqs: HashMap<ClerkId, u64>,
 }
 
 impl KvServer {
+    /// Create an instance of `KvServer`,
+    /// returns the instance and the receiver of applies commands.
     pub fn new(
         servers: Vec<crate::proto::raftpb::RaftClient>,
         me: usize,
@@ -72,6 +84,7 @@ impl KvServer {
 }
 
 impl KvServer {
+    /// Send and start a command to Raft layer.
     fn start(&mut self, command: Command) -> Result<oneshot::Receiver<NotifyReply>> {
         let (tx, rx) = oneshot::channel();
         let (index, term) = self.raft.start(&command).map_err(Error::Raft)?;
@@ -85,6 +98,7 @@ impl KvServer {
         Ok(rx)
     }
 
+    /// Raft wants to apply a new command (request) or snapshot.
     fn apply(&mut self, msg: ApplyMsg) {
         match msg {
             ApplyMsg::Command { index, command } => {
@@ -92,9 +106,9 @@ impl KvServer {
                 kvlog!(self, "apply command: {:?}", req);
 
                 let to_apply = {
+                    // only apply new requests, that is with larger seq number
                     let max_seq = self.max_seqs.entry(req.cid.clone()).or_default();
                     if req.seq > *max_seq {
-                        // only apply new requests
                         *max_seq = req.seq;
                         true
                     } else {
@@ -147,14 +161,18 @@ impl KvServer {
     }
 }
 
+/// Key-value service which triggers command starting and applying for inner `KvServer` instance.
 #[derive(Clone)]
 pub struct Node {
     // Your definitions here.
+    /// Inner server instance
     kv: Arc<RwLock<KvServer>>,
+    /// Thread pool executor shared with inner Raft instance.
     executor: Executor,
 }
 
 impl Node {
+    /// Create a service with inner server and a receiver for applied commands.
     pub fn new(kv: KvServer, apply_rx: UnboundedReceiver<ApplyMsg>) -> Node {
         // Your code here.
         let executor = kv.raft.executor.clone();
@@ -168,6 +186,8 @@ impl Node {
         node
     }
 
+    /// Spawn the main loop for kv server.
+    /// Will poll applied commands from receiver and call `KvServer::apply`.
     pub fn start_applier(&self, mut apply_rx: UnboundedReceiver<ApplyMsg>) {
         let kv = Arc::clone(&self.kv);
 
@@ -179,7 +199,8 @@ impl Node {
                             kv.write().unwrap().apply(msg);
                         }
                         None => {
-                            warn!("applier exited");
+                            let kv = kv.read().unwrap();
+                            kvlog!(level: warn, kv, "applier exited");
                             break;
                         }
                     }
@@ -221,6 +242,8 @@ impl Node {
 #[async_trait::async_trait]
 impl KvService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
+
+    /// RPC service handler for `Op`.
     async fn op(&self, req: KvRequest) -> labrpc::Result<KvReply> {
         let kv = Arc::clone(&self.kv);
         self.executor

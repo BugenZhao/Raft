@@ -1,8 +1,9 @@
 # Raft
 
 [![Test](https://github.com/BugenZhao/Raft/actions/workflows/test.yaml/badge.svg)](https://github.com/BugenZhao/Raft/actions/workflows/test.yaml)
+[![Docs](https://img.shields.io/badge/Docs-detailed-orange)](https://bugenzhao.com/Raft/)
 
-A solution to _"6.824 Lab 2: Raft"_ and _"6.824 Lab 3: Fault-tolerant Key/Value Service"_ from MIT.
+A solution to _"6.824 Lab 2: Raft"_ and _"6.824 Lab 3: Fault-tolerant Key/Value Service"_ from MIT, with detailed documentations.
 
 Base code and lab parts marked with `*` are migrated from [pingcap/talent-plan](https://github.com/pingcap/talent-plan).
 
