@@ -1075,6 +1075,19 @@
 <span id="1075">1075</span>
 <span id="1076">1076</span>
 <span id="1077">1077</span>
+<span id="1078">1078</span>
+<span id="1079">1079</span>
+<span id="1080">1080</span>
+<span id="1081">1081</span>
+<span id="1082">1082</span>
+<span id="1083">1083</span>
+<span id="1084">1084</span>
+<span id="1085">1085</span>
+<span id="1086">1086</span>
+<span id="1087">1087</span>
+<span id="1088">1088</span>
+<span id="1089">1089</span>
+<span id="1090">1090</span>
 </pre><pre class="rust">
 <span class="kw">use</span> <span class="ident">std::cmp::Ordering</span>;
 <span class="kw">use</span> <span class="ident">std::sync</span>::{<span class="ident">Arc</span>, <span class="ident">Mutex</span>, <span class="ident">RwLock</span>};
@@ -1101,6 +1114,10 @@
 <span class="kw">use</span> <span class="kw">crate</span>::{<span class="ident">Executor</span>, <span class="ident">SHARED_EXECUTOR</span>};
 
 <span class="kw">pub</span> <span class="kw">use</span> <span class="self">self</span><span class="ident">::states::State</span>;
+
+<span class="doccomment">/// Raft peer heart beat interval in millis,</span>
+<span class="doccomment">/// should not be too small to ensure passing tests.</span>
+<span class="kw">const</span> <span class="ident">HEART_BEAT_MILLIS</span>: <span class="ident">u64</span> <span class="op">=</span> <span class="number">120</span>;
 
 <span class="doccomment">/// Message sent to the service.</span>
 <span class="attribute">#[<span class="ident">derive</span>(<span class="ident">Debug</span>)]</span>
@@ -1209,7 +1226,7 @@
             <span class="ident">last_applied</span>: <span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">snapshot_last_included_index</span>(),
         };
 
-        <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">rf</span> <span class="op">=</span> <span class="ident">Raft</span> {
+        <span class="kw">let</span> <span class="ident">rf</span> <span class="op">=</span> <span class="ident">Raft</span> {
             <span class="ident">peers</span>,
             <span class="ident">me</span>,
             <span class="ident">role</span>: <span class="ident">RoleState::Follower</span>,
@@ -1220,7 +1237,6 @@
             <span class="ident">apply_tx</span>,
             <span class="ident">executor</span>: <span class="ident">SHARED_EXECUTOR</span>.<span class="ident">clone</span>(),
         };
-        <span class="ident">rf</span>.<span class="ident">turn_follower</span>();
         <span class="macro">rlog!</span>(
             <span class="ident">rf</span>,
             <span class="string">&quot;start: volatile: {:?};  persist: {:?}&quot;</span>,
@@ -1525,6 +1541,7 @@
             <span class="comment">// up to date, install now</span>
             <span class="self">self</span>.<span class="ident">install_snapshot</span>(<span class="bool-val">true</span>, <span class="ident">last_included_index</span>, <span class="ident">last_included_term</span>, <span class="ident">snapshot</span>)
         } <span class="kw">else</span> {
+            <span class="macro">rlog!</span>(<span class="ident">level</span>: <span class="ident">warn</span>, <span class="self">self</span>, <span class="string">&quot;reject outdated snapshot&quot;</span>);
             <span class="bool-val">false</span>
         }
     }
@@ -1541,7 +1558,7 @@
         <span class="ident">snapshot</span>: <span class="ident">Vec</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;</span>,
     ) <span class="op">-</span><span class="op">&gt;</span> <span class="ident">bool</span> {
         <span class="macro">rlog!</span>(
-            <span class="ident">level</span>: <span class="ident">info</span>,
+            <span class="ident">level</span>: <span class="ident">warn</span>,
             <span class="self">self</span>,
             <span class="string">&quot;install snapshot: from peer({}), included_index({})&quot;</span>,
             <span class="ident">from_peer</span>,
@@ -1715,25 +1732,29 @@
 
                         <span class="comment">// log replication</span>
                         <span class="kw">let</span> <span class="ident">our_term</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">term_at</span>(<span class="ident">args</span>.<span class="ident">prev_log_index</span> <span class="kw">as</span> <span class="ident">usize</span>);
-                        <span class="kw">let</span> <span class="ident">contains_prev</span> <span class="op">=</span> <span class="ident">our_term</span> <span class="op">=</span><span class="op">=</span> <span class="prelude-val">Some</span>(<span class="ident">args</span>.<span class="ident">prev_log_term</span>);
-                        <span class="kw">if</span> <span class="op">!</span><span class="ident">contains_prev</span> {
+                        <span class="kw">let</span> <span class="ident">contains_prev_entry</span> <span class="op">=</span> <span class="ident">our_term</span> <span class="op">=</span><span class="op">=</span> <span class="prelude-val">Some</span>(<span class="ident">args</span>.<span class="ident">prev_log_term</span>);
+
+                        <span class="kw">if</span> <span class="op">!</span><span class="ident">contains_prev_entry</span> {
+                            <span class="comment">// invalid request, we may give the leader some hints about the confliction</span>
                             <span class="kw">let</span> <span class="ident">conflict_index</span> <span class="op">=</span> {
                                 <span class="comment">// for faster back up</span>
                                 <span class="kw">if</span> <span class="ident">args</span>.<span class="ident">prev_log_index</span> <span class="op">&gt;</span><span class="op">=</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">next_index</span>() <span class="kw">as</span> <span class="ident">u64</span> {
                                     <span class="comment">// our log is shorter than leader&#39;s</span>
                                     <span class="comment">// simply request from the very first missing one</span>
-                                    <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">next_index</span>()
+                                    <span class="prelude-val">Some</span>(<span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">next_index</span>())
                                 } <span class="kw">else</span> {
                                     <span class="comment">// ignore ALL entries at `our_term`</span>
-                                    <span class="kw">let</span> <span class="ident">our_term</span> <span class="op">=</span> <span class="ident">our_term</span>.<span class="ident">unwrap</span>();
-                                    (<span class="number">0</span>..<span class="ident">args</span>.<span class="ident">prev_log_index</span> <span class="kw">as</span> <span class="ident">usize</span>)
+                                    <span class="comment">// if `our_term` is None, then just give up the fast backing up</span>
+                                    <span class="ident">our_term</span>.<span class="ident">map</span>(<span class="op">|</span><span class="ident">our_term</span><span class="op">|</span> {
+                                        (<span class="number">0</span>..<span class="ident">args</span>.<span class="ident">prev_log_index</span> <span class="kw">as</span> <span class="ident">usize</span>)
                                         .<span class="ident">rev</span>()
                                         .<span class="ident">find</span>(<span class="op">|</span><span class="ident">i</span><span class="op">|</span> <span class="self">self</span>.<span class="ident">p</span>.<span class="ident">log</span>.<span class="ident">term_at</span>(<span class="kw-2">*</span><span class="ident">i</span>) <span class="op">!</span><span class="op">=</span> <span class="prelude-val">Some</span>(<span class="ident">our_term</span>))
                                         .<span class="ident">unwrap</span>() <span class="comment">// must exists thanks to dummy entry</span>
                                         <span class="op">+</span> <span class="number">1</span>
+                                    })
                                 }
                             };
-                            (<span class="bool-val">false</span>, <span class="prelude-val">Some</span>(<span class="ident">conflict_index</span>))
+                            (<span class="bool-val">false</span>, <span class="ident">conflict_index</span>)
                         } <span class="kw">else</span> {
                             <span class="comment">// valid request, pop stale entries and append new entries to be consistent with leader</span>
                             <span class="kw">let</span> <span class="ident">contains_leader_all</span> <span class="op">=</span>
@@ -1975,12 +1996,12 @@
             .<span class="ident">spawn</span>(<span class="kw">async</span> <span class="kw">move</span> {
                 <span class="kw">let</span> <span class="ident">build_timeout_timer</span> <span class="op">=</span> <span class="op">|</span><span class="op">|</span> {
                     <span class="ident">futures_timer::Delay::new</span>(<span class="ident">Duration::from_millis</span>(
-                        <span class="ident">rand::thread_rng</span>().<span class="ident">gen_range</span>(<span class="number">300</span>, <span class="number">500</span>),
+                        <span class="ident">rand::thread_rng</span>().<span class="ident">gen_range</span>(<span class="ident">HEART_BEAT_MILLIS</span> <span class="op">*</span> <span class="number">3</span>, <span class="ident">HEART_BEAT_MILLIS</span> <span class="op">*</span> <span class="number">5</span>),
                     ))
                     .<span class="ident">fuse</span>()
                 };
                 <span class="kw">let</span> <span class="ident">build_hb_timer</span> <span class="op">=</span>
-                    <span class="op">|</span><span class="op">|</span> <span class="ident">futures_timer::Delay::new</span>(<span class="ident">Duration::from_millis</span>(<span class="number">100</span>)).<span class="ident">fuse</span>();
+                    <span class="op">|</span><span class="op">|</span> <span class="ident">futures_timer::Delay::new</span>(<span class="ident">Duration::from_millis</span>(<span class="ident">HEART_BEAT_MILLIS</span>)).<span class="ident">fuse</span>();
 
                 <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">timeout_timer</span> <span class="op">=</span> <span class="ident">build_timeout_timer</span>();
                 <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">hb_timer</span> <span class="op">=</span> <span class="ident">build_hb_timer</span>();
@@ -2048,6 +2069,11 @@
             <span class="ident">term</span>: <span class="self">self</span>.<span class="ident">term</span>(),
             <span class="ident">is_leader</span>: <span class="self">self</span>.<span class="ident">is_leader</span>(),
         }
+    }
+
+    <span class="doccomment">/// Size of persisted log.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">log_size</span>(<span class="kw-2">&amp;</span><span class="self">self</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="ident">usize</span> {
+        <span class="self">self</span>.<span class="ident">raft</span>.<span class="ident">read</span>().<span class="ident">unwrap</span>().<span class="ident">p</span>.<span class="ident">log_size</span>()
     }
 
     <span class="doccomment">/// the service says it has created a snapshot that has</span>

@@ -319,6 +319,22 @@
 <span id="319">319</span>
 <span id="320">320</span>
 <span id="321">321</span>
+<span id="322">322</span>
+<span id="323">323</span>
+<span id="324">324</span>
+<span id="325">325</span>
+<span id="326">326</span>
+<span id="327">327</span>
+<span id="328">328</span>
+<span id="329">329</span>
+<span id="330">330</span>
+<span id="331">331</span>
+<span id="332">332</span>
+<span id="333">333</span>
+<span id="334">334</span>
+<span id="335">335</span>
+<span id="336">336</span>
+<span id="337">337</span>
 </pre><pre class="rust">
 <span class="kw">use</span> <span class="kw">crate</span><span class="ident">::proto::raftpb</span>::<span class="kw-2">*</span>;
 <span class="kw">use</span> <span class="ident">serde</span>::{<span class="ident">Deserialize</span>, <span class="ident">Serialize</span>};
@@ -487,6 +503,18 @@
             <span class="kw">for</span> <span class="kw">_</span> <span class="kw">in</span> <span class="number">0</span>..<span class="ident">n_compact</span> {
                 <span class="self">self</span>.<span class="ident">inner</span>.<span class="ident">pop_front</span>();
             }
+
+            <span class="kw">if</span> <span class="self">self</span>.<span class="ident">inner</span>.<span class="ident">len</span>() <span class="op">&gt;</span><span class="op">=</span> <span class="number">50</span> {
+                <span class="macro">warn!</span>(
+                    <span class="string">&quot;compacted {} entries, while {} entries still in memory!&quot;</span>,
+                    <span class="ident">n_compact</span>,
+                    <span class="self">self</span>.<span class="ident">inner</span>.<span class="ident">len</span>()
+                );
+            } <span class="kw">else</span> {
+                <span class="macro">debug!</span>(<span class="string">&quot;compacted {} entries&quot;</span>, <span class="ident">n_compact</span>);
+            }
+
+            <span class="self">self</span>.<span class="ident">inner</span>.<span class="ident">shrink_to_fit</span>();
             <span class="self">self</span>.<span class="ident">in_snapshot_len</span> <span class="op">=</span> <span class="ident">included_index</span> <span class="op">+</span> <span class="number">1</span>;
             <span class="self">self</span>.<span class="ident">snapshot_last_included_term</span> <span class="op">=</span> <span class="ident">included_term</span>;
             <span class="bool-val">true</span>
@@ -614,6 +642,10 @@
         } <span class="kw">else</span> {
             <span class="ident">persister</span>.<span class="ident">save_raft_state</span>(<span class="ident">p</span>);
         }
+    }
+
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">log_size</span>(<span class="kw-2">&amp;</span><span class="self">self</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="ident">usize</span> {
+        <span class="self">self</span>.<span class="ident">persister</span>.<span class="ident">raft_state_size</span>()
     }
 }
 
