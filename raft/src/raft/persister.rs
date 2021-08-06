@@ -12,6 +12,8 @@ pub trait Persister: Send + Sync + 'static {
     fn save_raft_state(&self, state: Vec<u8>);
     fn save_state_and_snapshot(&self, state: Vec<u8>, snapshot: Vec<u8>);
     fn snapshot(&self) -> Vec<u8>;
+    fn raft_state_size(&self) -> usize;
+    fn snapshot_size(&self) -> usize;
 }
 
 impl<T: ?Sized + Persister> Persister for Box<T> {
@@ -27,6 +29,12 @@ impl<T: ?Sized + Persister> Persister for Box<T> {
     fn snapshot(&self) -> Vec<u8> {
         (**self).snapshot()
     }
+    fn raft_state_size(&self) -> usize {
+        (**self).raft_state_size()
+    }
+    fn snapshot_size(&self) -> usize {
+        (**self).snapshot_size()
+    }
 }
 
 impl<T: ?Sized + Sync + Persister> Persister for Arc<T> {
@@ -41,6 +49,12 @@ impl<T: ?Sized + Sync + Persister> Persister for Arc<T> {
     }
     fn snapshot(&self) -> Vec<u8> {
         (**self).snapshot()
+    }
+    fn raft_state_size(&self) -> usize {
+        (**self).raft_state_size()
+    }
+    fn snapshot_size(&self) -> usize {
+        (**self).snapshot_size()
     }
 }
 
@@ -77,14 +91,12 @@ impl Persister for SimplePersister {
     fn snapshot(&self) -> Vec<u8> {
         self.states.lock().unwrap().1.clone()
     }
-}
 
-impl SimplePersister {
-    pub fn raft_state_size(&self) -> usize {
+    fn raft_state_size(&self) -> usize {
         self.states.lock().unwrap().0.len()
     }
 
-    pub fn snapshot_size(&self) -> usize {
+    fn snapshot_size(&self) -> usize {
         self.states.lock().unwrap().1.len()
     }
 }

@@ -131,7 +131,7 @@ impl Raft {
             last_applied: p.log.snapshot_last_included_index(),
         };
 
-        let mut rf = Raft {
+        let rf = Raft {
             peers,
             me,
             role: RoleState::Follower,
@@ -142,7 +142,6 @@ impl Raft {
             apply_tx,
             executor: SHARED_EXECUTOR.clone(),
         };
-        rf.turn_follower();
         rlog!(
             rf,
             "start: volatile: {:?};  persist: {:?}",
@@ -447,6 +446,7 @@ impl Raft {
             // up to date, install now
             self.install_snapshot(true, last_included_index, last_included_term, snapshot)
         } else {
+            rlog!(level: warn, self, "reject outdated snapshot");
             false
         }
     }
@@ -463,7 +463,7 @@ impl Raft {
         snapshot: Vec<u8>,
     ) -> bool {
         rlog!(
-            level: info,
+            level: warn,
             self,
             "install snapshot: from peer({}), included_index({})",
             from_peer,
@@ -637,25 +637,29 @@ impl Raft {
 
                         // log replication
                         let our_term = self.p.log.term_at(args.prev_log_index as usize);
-                        let contains_prev = our_term == Some(args.prev_log_term);
-                        if !contains_prev {
+                        let contains_prev_entry = our_term == Some(args.prev_log_term);
+
+                        if !contains_prev_entry {
+                            // invalid request, we may give the leader some hints about the confliction
                             let conflict_index = {
                                 // for faster back up
                                 if args.prev_log_index >= self.p.log.next_index() as u64 {
                                     // our log is shorter than leader's
                                     // simply request from the very first missing one
-                                    self.p.log.next_index()
+                                    Some(self.p.log.next_index())
                                 } else {
                                     // ignore ALL entries at `our_term`
-                                    let our_term = our_term.unwrap();
-                                    (0..args.prev_log_index as usize)
+                                    // if `our_term` is None, then just give up the fast backing up
+                                    our_term.map(|our_term| {
+                                        (0..args.prev_log_index as usize)
                                         .rev()
                                         .find(|i| self.p.log.term_at(*i) != Some(our_term))
                                         .unwrap() // must exists thanks to dummy entry
                                         + 1
+                                    })
                                 }
                             };
-                            (false, Some(conflict_index))
+                            (false, conflict_index)
                         } else {
                             // valid request, pop stale entries and append new entries to be consistent with leader
                             let contains_leader_all =
@@ -970,6 +974,11 @@ impl Node {
             term: self.term(),
             is_leader: self.is_leader(),
         }
+    }
+
+    /// Size of persisted log.
+    pub fn log_size(&self) -> usize {
+        self.raft.read().unwrap().p.log_size()
     }
 
     /// the service says it has created a snapshot that has

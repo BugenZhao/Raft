@@ -293,6 +293,10 @@ impl PersistentStateWrapper {
             persister.save_raft_state(p);
         }
     }
+
+    pub fn log_size(&self) -> usize {
+        self.persister.raft_state_size()
+    }
 }
 
 impl ops::Deref for PersistentStateWrapper {
