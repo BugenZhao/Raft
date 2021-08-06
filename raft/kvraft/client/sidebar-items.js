@@ -1,1 +1,1 @@
-initSidebarItems({"struct":[["Clerk",""]]});
+initSidebarItems({"struct":[["Clerk","A key-value clerk."]]});

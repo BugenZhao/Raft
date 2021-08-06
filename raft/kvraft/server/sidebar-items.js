@@ -1,1 +1,1 @@
-initSidebarItems({"enum":[["NotifyReply",""]],"struct":[["KvServer",""],["Node",""],["Notifier",""]],"type":[["Command",""]]});
+initSidebarItems({"enum":[["NotifyReply","Reply for notifier."]],"struct":[["KvServer","A key-value server."],["Node","Key-value service which triggers command starting and applying for inner `KvServer` instance."],["Notifier","Notifier for applied requests."]],"type":[["ClerkId",""],["Command",""],["CommandIndex",""]]});
