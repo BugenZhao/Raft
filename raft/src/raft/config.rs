@@ -58,11 +58,7 @@ impl Storage {
 fn init_logger() {
     use std::sync::Once;
     static LOGGER_INIT: Once = Once::new();
-    LOGGER_INIT.call_once(|| {
-        env_logger::builder()
-            .filter_level(log::LevelFilter::Info)
-            .init();
-    });
+    LOGGER_INIT.call_once(env_logger::init);
 }
 
 pub struct Config {
