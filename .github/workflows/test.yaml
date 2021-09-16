@@ -20,7 +20,7 @@ jobs:
           max_attempts: 3
           retry_on: timeout
           command: make test_2
-  test-3a:
+  test-3:
     name: Test 3
     runs-on: ubuntu-latest
     steps:
@@ -38,3 +38,20 @@ jobs:
           max_attempts: 3
           retry_on: timeout
           command: make test_3
+  test-percolator:
+    name: Test Percolator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Check and Test
+        env:
+          RUST_TEST_THREADS: 8
+        uses: nick-invision/retry@v2
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_on: timeout
+          command: make test_percolator
