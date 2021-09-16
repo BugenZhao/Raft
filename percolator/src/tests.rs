@@ -104,11 +104,11 @@ fn test_get_timestamp_under_unreliable_network() {
         }));
     }
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(150));
     rn.enable("tso0", true);
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(300));
     rn.enable("tso1", true);
-    thread::sleep(Duration::from_millis(400));
+    thread::sleep(Duration::from_millis(600));
     rn.enable("tso2", true);
 
     for child in children {
