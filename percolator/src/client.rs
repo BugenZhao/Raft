@@ -122,8 +122,8 @@ impl Client {
                 primary_key: primary_key.clone(),
                 start_ts,
             };
-            let result = back_off(|| self.txn_client.prewrite(args)).await?;
-            if !result.success {
+            let success = back_off(|| self.txn_client.prewrite(args)).await?.success;
+            if !success {
                 return Ok(false);
             }
         }
@@ -131,15 +131,23 @@ impl Client {
         let commit_ts = self.get_timestamp_async().await?;
 
         for (i, key) in keys.into_iter().enumerate() {
+            let is_primary = i == 0;
             let args = &CommitRequest {
-                is_primary: i == 0,
+                is_primary,
                 key,
                 start_ts,
                 commit_ts,
             };
-            let result = back_off(|| self.txn_client.commit(args)).await?;
-            if !result.success {
-                return Ok(false);
+            let result = back_off(|| self.txn_client.commit(args)).await;
+            if is_primary {
+                match result {
+                    Ok(CommitResponse { success: false }) => return Ok(false),
+                    Ok(_) => {}
+                    Err(Error::Other(reason)) if reason == "reqhook" => return Ok(false),
+                    Err(e) => return Err(e),
+                }
+            } else {
+                // must success, ignore any error
             }
         }
 

@@ -3,6 +3,7 @@
 extern crate log;
 
 // After you finish the implementation, `#[allow(unused)]` should be removed.
+#[allow(unused)]
 mod client;
 mod server;
 mod service;

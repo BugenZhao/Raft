@@ -1,8 +1,9 @@
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::ops::{Bound, RangeBounds};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::msg::*;
 use crate::service::*;
@@ -10,7 +11,7 @@ use crate::service::*;
 // TTL is used for a lock key.
 // If the key's lifetime exceeds this value, it should be cleaned up.
 // Otherwise, the operation should back off.
-const TTL: u64 = Duration::from_millis(100).as_nanos() as u64;
+const TTL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Default)]
 pub struct TimestampOracle {
@@ -66,14 +67,13 @@ pub enum Column {
 // It provides three columns: Write, Data, and Lock.
 #[derive(Clone, Default)]
 pub struct KvTable {
-    write: BTreeMap<Key, Value>,
-    data: BTreeMap<Key, Value>,
-    lock: BTreeMap<Key, Value>,
+    write: BTreeMap<Key, (Value, Instant)>,
+    data: BTreeMap<Key, (Value, Instant)>,
+    lock: BTreeMap<Key, (Value, Instant)>,
 }
 
 impl KvTable {
-    #[inline]
-    fn column_ref(&self, column: Column) -> &BTreeMap<Key, Value> {
+    fn column_ref(&self, column: Column) -> &BTreeMap<Key, (Value, Instant)> {
         match column {
             Column::Write => &self.write,
             Column::Data => &self.data,
@@ -81,8 +81,7 @@ impl KvTable {
         }
     }
 
-    #[inline]
-    fn column_mut(&mut self, column: Column) -> &mut BTreeMap<Key, Value> {
+    fn column_mut(&mut self, column: Column) -> &mut BTreeMap<Key, (Value, Instant)> {
         match column {
             Column::Write => &mut self.write,
             Column::Data => &mut self.data,
@@ -92,7 +91,6 @@ impl KvTable {
 
     // Reads the latest key-value record from a specified column
     // in MemoryStorage with a given key and a timestamp range.
-    #[inline]
     fn read(
         &self,
         key: &[u8],
@@ -112,23 +110,46 @@ impl KvTable {
             Bound::Unbounded => Bound::Included((key.to_vec(), u64::MAX)),
         };
 
-        column.range((key_start, key_end)).last()
+        column
+            .range((key_start, key_end))
+            .last()
+            .map(|(k, (v, _i))| (k, v))
+    }
+
+    fn read_owned(
+        &self,
+        key: &[u8],
+        column: Column,
+        ts_range: impl RangeBounds<u64>,
+    ) -> Option<(Key, Value)> {
+        self.read(key, column, ts_range)
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
     }
 
     // Writes a record to a specified column in MemoryStorage.
-    #[inline]
     fn write(&mut self, key: Vec<u8>, column: Column, ts: u64, value: Value) {
         // Your code here.
         let column = self.column_mut(column);
-        column.insert((key, ts), value);
+        column.insert((key, ts), (value, Instant::now()));
     }
 
-    #[inline]
     // Erases a record from a specified column in MemoryStorage.
     fn erase(&mut self, key: &[u8], column: Column, commit_ts: u64) -> Option<Value> {
         // Your code here.
         let column = self.column_mut(column);
-        column.remove(&(key.to_vec(), commit_ts))
+        column.remove(&(key.to_vec(), commit_ts)).map(|(v, _i)| v)
+    }
+
+    fn try_erase_expired(&mut self, key: &[u8], column: Column, commit_ts: u64) -> Option<Value> {
+        // Your code here.
+        let column = self.column_mut(column);
+        if let Entry::Occupied(o) = column.entry((key.to_vec(), commit_ts)) {
+            let instant = o.get().1;
+            if instant.elapsed() > TTL {
+                return o.remove().0.into();
+            }
+        }
+        None
     }
 }
 
@@ -148,9 +169,12 @@ impl transaction::Service for MemoryStorage {
 
         let data = loop {
             let data = self.data.lock().unwrap();
-            let lock = data.read(&key, Column::Lock, 0..=start_ts);
-            if lock.is_some() {
-                self.back_off_maybe_clean_up_lock(start_ts, &key, data);
+            let lock = data.read_owned(&key, Column::Lock, 0..=start_ts);
+
+            if let Some(((key, ts), lock)) = lock {
+                if let Some(data) = self.back_off_maybe_clean_up_lock(key, ts, lock, data) {
+                    break data;
+                }
             } else {
                 break data;
             }
@@ -221,7 +245,6 @@ impl transaction::Service for MemoryStorage {
                     false
                 }
             } else {
-                assert!(lock.is_some(), "secondary commit can not fail");
                 data.write(key, Column::Write, commit_ts, Value::Timestamp(start_ts));
                 true
             }
@@ -232,13 +255,45 @@ impl transaction::Service for MemoryStorage {
 }
 
 impl MemoryStorage {
-    fn back_off_maybe_clean_up_lock(
+    fn back_off_maybe_clean_up_lock<'a>(
         &self,
-        start_ts: u64,
-        key: &[u8],
-        data: MutexGuard<'_, KvTable>,
-    ) {
+        key: Vec<u8>,
+        ts: u64,
+        lock: Value,
+        mut data: MutexGuard<'a, KvTable>,
+    ) -> Option<MutexGuard<'a, KvTable>> {
         // Your code here.
-        unimplemented!()
+        let may_rollback_primary = |key: &[u8], mut data: MutexGuard<'a, KvTable>| {
+            if let Some(_lock) = data.try_erase_expired(key, Column::Lock, ts) {
+                // may crashed, rollback it
+                data.erase(key, Column::Data, ts);
+                Some(data)
+            } else {
+                None
+            }
+        };
+
+        match lock {
+            /* Primary */
+            Value::Timestamp(_) => may_rollback_primary(&key, data),
+            /* Secondary */
+            Value::Vector(primary_key) => {
+                let primary_lock = data.read_owned(&primary_key, Column::Lock, ts..=ts);
+                let primary_write = data.read_owned(&primary_key, Column::Write, ts..);
+                if primary_lock.is_none() {
+                    if let Some(((_, commit_ts), _)) = primary_write {
+                        // previous txn success, commit it
+                        data.erase(&key, Column::Lock, ts).unwrap();
+                        data.write(key.to_vec(), Column::Write, commit_ts, Value::Timestamp(ts));
+                    } else {
+                        // previous txn rollbacked, clean up it
+                        data.erase(&key, Column::Lock, ts).unwrap();
+                    }
+                    Some(data)
+                } else {
+                    may_rollback_primary(&primary_key, data)
+                }
+            }
+        }
     }
 }
