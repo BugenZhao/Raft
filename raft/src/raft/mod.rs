@@ -115,7 +115,7 @@ macro_rules! rlog {
 impl Raft {
     /// the service or tester wants to create a Raft server. the ports
     /// of all the Raft servers (including this one) are in peers. this
-    /// server's port is peers[me]. all the servers' peers arrays
+    /// server's port is peers\[me\]. all the servers' peers arrays
     /// have the same order. persister is a place for this server to
     /// save its persistent state, and also initially holds the most
     /// recent saved state, if any. apply_ch is a channel on which the
