@@ -332,10 +332,8 @@ async fn process_rpc(
     if let Some(reordering) = long_reordering {
         debug!("{:?} next long reordering {}ms", rpc, reordering);
         Delay::new(Duration::from_millis(reordering)).await;
-        Ok(resp)
-    } else {
-        Ok(resp)
     }
+    Ok(resp)
 }
 
 /// Checks if the specified server killed.

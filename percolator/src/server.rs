@@ -281,13 +281,12 @@ impl MemoryStorage {
                 let primary_lock = data.read_owned(&primary_key, Column::Lock, ts..=ts);
                 let primary_write = data.read_owned(&primary_key, Column::Write, ts..);
                 if primary_lock.is_none() {
+                    data.erase(&key, Column::Lock, ts).unwrap();
                     if let Some(((_, commit_ts), _)) = primary_write {
                         // previous txn success, commit it
-                        data.erase(&key, Column::Lock, ts).unwrap();
                         data.write(key.to_vec(), Column::Write, commit_ts, Value::Timestamp(ts));
                     } else {
                         // previous txn rollbacked, clean up it
-                        data.erase(&key, Column::Lock, ts).unwrap();
                     }
                     Some(data)
                 } else {
