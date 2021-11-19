@@ -296,7 +296,6 @@
 <span id="296">296</span>
 <span id="297">297</span>
 <span id="298">298</span>
-<span id="299">299</span>
 </pre><pre class="rust"><code><span class="kw">use</span> <span class="ident">std::collections::btree_map::Entry</span>;
 <span class="kw">use</span> <span class="ident">std::collections::BTreeMap</span>;
 <span class="kw">use</span> <span class="ident">std::ops</span>::{<span class="ident">Bound</span>, <span class="ident">RangeBounds</span>};
@@ -580,13 +579,12 @@
                 <span class="kw">let</span> <span class="ident">primary_lock</span> <span class="op">=</span> <span class="ident">data</span>.<span class="ident">read_owned</span>(<span class="kw-2">&amp;</span><span class="ident">primary_key</span>, <span class="ident">Column::Lock</span>, <span class="ident">ts</span>..<span class="op">=</span><span class="ident">ts</span>);
                 <span class="kw">let</span> <span class="ident">primary_write</span> <span class="op">=</span> <span class="ident">data</span>.<span class="ident">read_owned</span>(<span class="kw-2">&amp;</span><span class="ident">primary_key</span>, <span class="ident">Column::Write</span>, <span class="ident">ts</span>..);
                 <span class="kw">if</span> <span class="ident">primary_lock</span>.<span class="ident">is_none</span>() {
+                    <span class="ident">data</span>.<span class="ident">erase</span>(<span class="kw-2">&amp;</span><span class="ident">key</span>, <span class="ident">Column::Lock</span>, <span class="ident">ts</span>).<span class="ident">unwrap</span>();
                     <span class="kw">if</span> <span class="kw">let</span> <span class="prelude-val">Some</span>(((<span class="kw">_</span>, <span class="ident">commit_ts</span>), <span class="kw">_</span>)) <span class="op">=</span> <span class="ident">primary_write</span> {
                         <span class="comment">// previous txn success, commit it</span>
-                        <span class="ident">data</span>.<span class="ident">erase</span>(<span class="kw-2">&amp;</span><span class="ident">key</span>, <span class="ident">Column::Lock</span>, <span class="ident">ts</span>).<span class="ident">unwrap</span>();
                         <span class="ident">data</span>.<span class="ident">write</span>(<span class="ident">key</span>.<span class="ident">to_vec</span>(), <span class="ident">Column::Write</span>, <span class="ident">commit_ts</span>, <span class="ident">Value::Timestamp</span>(<span class="ident">ts</span>));
                     } <span class="kw">else</span> {
                         <span class="comment">// previous txn rollbacked, clean up it</span>
-                        <span class="ident">data</span>.<span class="ident">erase</span>(<span class="kw-2">&amp;</span><span class="ident">key</span>, <span class="ident">Column::Lock</span>, <span class="ident">ts</span>).<span class="ident">unwrap</span>();
                     }
                     <span class="prelude-val">Some</span>(<span class="ident">data</span>)
                 } <span class="kw">else</span> {
