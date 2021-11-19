@@ -1,1 +1,1 @@
-initSidebarItems({"struct":[["CommitRequest",""],["CommitResponse",""],["GetRequest",""],["GetResponse",""],["PrewriteRequest",""],["PrewriteResponse",""],["TimestampRequest",""],["TimestampResponse",""]]});
+initSidebarItems({"struct":[["CommitRequest",""],["CommitResponse",""],["GetRequest",""],["GetResponse",""],["PrewriteRequest",""],["PrewriteResponse",""],["TimestampRequest",""],["TimestampResponse",""],["Write",""]]});

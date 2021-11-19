@@ -1,1 +1,1 @@
-initSidebarItems({"mod":[["client",""],["msg",""],["server",""],["service",""]]});
+initSidebarItems({"macro":[["lazy_static",""]],"mod":[["client",""],["msg",""],["server",""],["service",""]],"struct":[["RUNTIME",""],["Runtime","The Tokio runtime."]]});
