@@ -276,28 +276,28 @@ impl Raft {
         }
     }
 
-    /// Turn to new `role`.
-    fn turn(&mut self, role: RoleState) {
+    /// Set new `role`.
+    fn set_role(&mut self, role: RoleState) {
         rlog!(self, "turn to {}", role);
         self.role = role;
     }
 
     /// Turn to follower.
     fn turn_follower(&mut self) {
-        self.turn(RoleState::Follower);
+        self.set_role(RoleState::Follower);
     }
 
     /// Turn to candidate, with 1 votes from ourself.
     fn turn_candidate(&mut self) {
         let votes = [self.me].iter().cloned().collect();
-        self.turn(RoleState::Candidate { votes });
+        self.set_role(RoleState::Candidate { votes });
     }
 
     /// Turn to leader, with reinitialized leader states.
     fn turn_leader(&mut self) {
         let next_index = vec![self.p.log.next_index(); self.peers.len()];
         let match_index = vec![0; self.peers.len()];
-        self.turn(RoleState::Leader {
+        self.set_role(RoleState::Leader {
             next_index,
             match_index,
         });
@@ -651,16 +651,17 @@ impl Raft {
                                     // our log is shorter than leader's
                                     // simply request from the very first missing one
                                     Some(self.p.log.next_index())
-                                } else {
+                                } else if let Some(our_term) = our_term {
                                     // ignore ALL entries at `our_term`
+                                    Some(
+                                        1 + (0..args.prev_log_index as usize)
+                                            .rev()
+                                            .find(|i| self.p.log.term_at(*i) != Some(our_term))
+                                            .unwrap(), // must exists thanks to dummy entry
+                                    )
+                                } else {
                                     // if `our_term` is None, then just give up the fast backing up
-                                    our_term.map(|our_term| {
-                                        (0..args.prev_log_index as usize)
-                                        .rev()
-                                        .find(|i| self.p.log.term_at(*i) != Some(our_term))
-                                        .unwrap() // must exists thanks to dummy entry
-                                        + 1
-                                    })
+                                    None
                                 }
                             };
                             (false, conflict_index)

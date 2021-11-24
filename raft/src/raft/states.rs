@@ -160,29 +160,29 @@ impl Log {
     ///
     /// Returns whether the compaction is successful.
     pub fn compact_to(&mut self, included_index: usize, included_term: u64) -> bool {
-        if included_index + 1 >= self.in_snapshot_len {
-            let n_compact = included_index + 1 - self.in_snapshot_len;
-            for _ in 0..n_compact {
-                self.inner.pop_front();
-            }
-
-            if self.inner.len() >= 50 {
-                warn!(
-                    "compacted {} entries, while {} entries still in memory!",
-                    n_compact,
-                    self.inner.len()
-                );
-            } else {
-                debug!("compacted {} entries", n_compact);
-            }
-
-            self.inner.shrink_to_fit();
-            self.in_snapshot_len = included_index + 1;
-            self.snapshot_last_included_term = included_term;
-            true
-        } else {
-            false
+        if included_index + 1 < self.in_snapshot_len {
+            return false;
         }
+
+        let n_compact = included_index + 1 - self.in_snapshot_len;
+        for _ in 0..n_compact {
+            self.inner.pop_front();
+        }
+
+        if self.inner.len() >= 50 {
+            warn!(
+                "compacted {} entries, while {} entries still in memory!",
+                n_compact,
+                self.inner.len()
+            );
+        } else {
+            debug!("compacted {} entries", n_compact);
+        }
+
+        self.inner.shrink_to_fit();
+        self.in_snapshot_len = included_index + 1;
+        self.snapshot_last_included_term = included_term;
+        true
     }
 }
 
